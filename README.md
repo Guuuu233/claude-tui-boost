@@ -35,7 +35,7 @@ In the sign-in form, supply the absolute path to your dedicated Claude config di
 
 The bridge keeps a Claude Code process alive across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation, parallel tools and read-only recovery of certain interrupted conversations. Because the Desktop and CLI can reshape historic messages, some tool handoffs can still return HTTP 409 rather than risk executing a tool twice. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
 
-Current user-message images are supported; historic image replay is not. macOS arm64 and Linux amd64 have received limited local/remote runtime checks; macOS amd64 and Linux arm64 builds are cross-compiled only. Windows-native PTY execution is not supported. See [COMPATIBILITY.md](COMPATIBILITY.md).
+Current user-message images are supported; historic image replay is not. macOS arm64 and Linux amd64 have received limited local/remote runtime checks; macOS amd64 and Linux arm64 builds are cross-compiled only. Windows-native PTY execution is not supported. See [COMPATIBILITY.md](COMPATIBILITY.md). Experimental crash recovery and strict legacy-migration gates are described in [RECOVERY.md](RECOVERY.md).
 
 ## Test and independently build
 

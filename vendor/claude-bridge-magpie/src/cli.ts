@@ -56,6 +56,7 @@ import {
 import { makePrintErrorResult } from "./print-result.ts";
 import { runJsonSchemaStopHook, runRuntimeHook } from "./stop-hook.ts";
 import { buildClaudeLaunchCommand } from "./launch-command.ts";
+import { writeNativeTmuxGuard } from "./native-tmux-guard.ts";
 import {
   apiErrorStatusFromRow,
   makeClaudeErrorResultEvent,
@@ -183,7 +184,13 @@ const sessionName = `claude-bridge-${runId.slice(-8)}`;
 const CLAUDE_READY_TIMEOUT_MS = envDurationMs("CLAUDE_BRIDGE_CLAUDE_READY_TIMEOUT_MS", 180_000);
 const TMUX_SUBMIT_DELAY_MS = envDurationMs("CLAUDE_BRIDGE_TMUX_SUBMIT_DELAY_MS", 1_000);
 const TMUX_EXIT_HOLD_MS = envDurationMs("CLAUDE_BRIDGE_TMUX_EXIT_HOLD_MS", 30_000);
-const MAX_SESSION_MS = envDurationMs("CLAUDE_BRIDGE_MAX_SESSION_MS", 2 * 60 * 60_000);
+// A genuine interactive Claude turn can contain hours of successive MCP
+// tool calls. The previous two-hour wall-clock ceiling terminated healthy
+// turns at precisely 7200s, including while a Write tool was outstanding,
+// then left Desktop with an orphan tool_result (HTTP 409). Keep a finite
+// safety bound, but make it suitable for long-running agent work. Explicit
+// cancellation, tool handoff guards and PTY shutdown still apply.
+const MAX_SESSION_MS = envDurationMs("CLAUDE_BRIDGE_MAX_SESSION_MS", 12 * 60 * 60_000);
 // The Stop hook fires before Claude appends the terminal turn_duration row, so
 // after a Stop event we briefly wait for that row to land before finalizing —
 // otherwise streamed JSONL is truncated mid-turn.
@@ -678,6 +685,15 @@ function startTmux(): void {
     exitStatusPath: claudeExitStatusPath,
     holdMs: TMUX_EXIT_HOLD_MS,
   });
+  const nativeGuardPath = process.env.MAGPIE_CLAUDE_NATIVE_TMUX_GUARD_PATH;
+  if (nativeGuardPath) {
+    try {
+      writeNativeTmuxGuard(nativeGuardPath, sessionName);
+    } catch (error) {
+      process.stderr.write(`[claude-bridge] cannot establish private native tmux ownership marker: ${String(error)}\n`);
+      process.exit(1); // No tmux session has been created; fail closed.
+    }
+  }
   desplegaDebug("starting claude in tmux", {
     sessionName,
     claudePath,

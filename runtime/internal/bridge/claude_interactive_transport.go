@@ -1244,10 +1244,10 @@ func (b *subscriptionBridge) startInteractiveResumeTurn(ctx context.Context, req
 	if contextChanged {
 		prompt = renderInteractiveContextRefresh(req) + prompt
 	}
-	// A resumed inner session is dirty until its new complete assistant reply
-	// replaces this checkpoint. If launch/output fails, the next request fails
-	// closed instead of replaying uncertain history.
-	b.markInteractiveSessionDirty(owner, outerSession)
+	// The resumed session must be dirtied only after acquiring the native
+	// process lease in startInteractiveWithPromptImages. Otherwise a competing
+	// Runtime could overwrite a clean checkpoint before discovering that it
+	// cannot actually start the owning Claude process.
 	return b.startInteractiveWithPromptImages(ctx, req, model, configDir, owner, outerSession, prompt, saved.SessionID, images, false)
 }
 
@@ -1304,8 +1304,63 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	}
 	cmd := commandContext(context.Background(), bridge, args...)
 	cmd.Dir = work
+	var nativeLease *os.File
+	if outerSession != "" && (b.toolJournal != nil || isLegacyReadOnlyRecovery(ctx) || legacyMigrationTargetsOuter(owner, outerSession)) {
+		nativeLease, err = acquireInteractiveNativeLease(owner, outerSession)
+		if err != nil {
+			clean()
+			return nil, nil, err
+		}
+		if os.Getenv("MAGPIE_CLAUDE_NATIVE_TMUX_GUARD") == "1" {
+			// A truly new conversation can create its first marker. Any
+			// existing checkpoint, resumed inner session, or recovery MUST
+			// already have a marker from its original Wrapper. Otherwise an
+			// older uninstrumented tmux pane could still be running.
+			_, hadCheckpoint := b.interactiveSession(owner, outerSession)
+			required := hadCheckpoint || resumeID != "" || readOnly
+			// A one-off, certificate-verified legacy migration must establish
+			// the first native ownership marker for this existing conversation.
+			// It is TOOL-FREE and cannot resume the old native callback. Every
+			// other new/resumed call still requires the normal tmux fence.
+			legacyReadOnly := isLegacyReadOnlyRecovery(ctx) && readOnly && resumeID == "" && !hadCheckpoint
+			if legacyReadOnly {
+				if _, e := os.Lstat(interactiveTmuxGuardPath(owner, outerSession)); e == nil || !errors.Is(e, os.ErrNotExist) {
+					releaseInteractiveNativeLease(nativeLease)
+					clean()
+					return nil, nil, errors.New("legacy migration cannot override an existing or uninspectable native tmux owner")
+				}
+				required = false
+			}
+			if err := inspectInteractiveTmuxGuard(owner, outerSession, required); err != nil {
+				releaseInteractiveNativeLease(nativeLease)
+				clean()
+				return nil, nil, err
+			}
+		}
+		// ExtraFiles keeps the lease alive in the native wrapper even when
+		// Runtime crashes before its normal wait/cleanup handlers execute.
+		cmd.ExtraFiles = append(cmd.ExtraFiles, nativeLease)
+	}
+	leaseTransferred := false
+	defer func() {
+		if !leaseTransferred {
+			releaseInteractiveNativeLease(nativeLease)
+		}
+	}()
+	if resumeID != "" && outerSession != "" {
+		// Before the resume's first possible side effect, the canonical
+		// checkpoint becomes dirty. In ledger mode the lease above prevents
+		// a second Runtime from dirtying another process's clean result.
+		b.markInteractiveSessionDirty(owner, outerSession)
+	}
 	env := envWithProxy(claudeProxy(ctx), interactiveClaudeEnv(os.Environ()))
 	env = append(env, "CLAUDE_BRIDGE_USER_CONTEXT_PATH="+filepath.Join(tmp, "user-context.json"))
+	if nativeLease != nil && os.Getenv("MAGPIE_CLAUDE_NATIVE_TMUX_GUARD") == "1" {
+		// The wrapper fsyncs the marker before creating its tmux session.
+		// Only this canonical run has the native process lease needed to
+		// replace the previous, proven-dead pane identity.
+		env = append(env, "MAGPIE_CLAUDE_NATIVE_TMUX_GUARD_PATH="+interactiveTmuxGuardPath(owner, outerSession))
+	}
 	if len(req.Safeguards) > 0 {
 		env = append(env,
 			"ANTHROPIC_BETAS="+req.SafeguardBeta,
@@ -1330,6 +1385,16 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 		outerSession: outerSession, threadKey: firstWords(req), sessionID: resumeID, images: images,
 		searchName: req.SearchTool, schema: len(req.Schema) > 0, readOnlyRecovery: readOnly,
 		safeguards: bytes.Clone(req.Safeguards), safeguardBeta: req.SafeguardBeta}
+	if b.toolJournal != nil && os.Getenv("MAGPIE_CLAUDE_FIRST_TURN_ANCHOR") == "1" &&
+		outerSession != "" && resumeID == "" && !readOnly && len(req.Messages) == 1 && req.Messages[0].Role == "user" {
+		// conversationKeys deliberately emits keys only at *assistant*
+		// turns, which do not exist yet. A private first-user fingerprint
+		// is sufficient for a Dirty anchor and never used to resume native
+		// Claude or as a completed assistant reply checkpoint.
+		run.firstTurnAnchorKey = toolEvidenceHash(owner + "\x00" + historyKey(req.Messages))
+	}
+	run.nativeLease = nativeLease
+	leaseTransferred = true // run.finish/removeRun now owns its release
 	for _, tool := range interactiveTools(req, len(images) > 0) {
 		run.tools[tool.Name] = true
 	}
@@ -1543,6 +1608,11 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 		if msg.SessionID != "" {
 			r.mu.Lock()
 			r.sessionID = msg.SessionID
+			if err := r.persistFirstToolAnchorLocked(); err != nil {
+				log.Printf("Claude interactive first-turn anchor write failed: %v", err)
+				// A failed write cannot be used as recovery proof. Tool
+				// handling still refuses execution when it first registers.
+			}
 			r.mu.Unlock()
 		}
 		switch msg.Type {

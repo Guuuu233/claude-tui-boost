@@ -59,12 +59,13 @@ import (
 )
 
 type subscriptionBridge struct {
-	mu      sync.Mutex
-	stateMu sync.Mutex                  // serializes the optional interactive checkpoint file
-	runs    map[string]*subscriptionRun // callback token → run
-	calls   map[string]*subscriptionRun // tool_use id → run
-	idle    map[string]*subscriptionRun // conversation so far (turnKey) → run
-	shelf   map[string]*savedSession    // conversation so far (turnKey) → its saved session
+	mu          sync.Mutex
+	stateMu     sync.Mutex                  // serializes the optional interactive checkpoint file
+	toolJournal *interactiveToolJournal     // opt-in durable evidence; never authorizes automatic tool replay
+	runs        map[string]*subscriptionRun // callback token → run
+	calls       map[string]*subscriptionRun // tool_use id → run
+	idle        map[string]*subscriptionRun // conversation so far (turnKey) → run
+	shelf       map[string]*savedSession    // conversation so far (turnKey) → its saved session
 	// outerThreads remembers the logical conversation that first claimed an
 	// outer client session while Magpie is alive. Desktop can reuse the same
 	// session id for helper work, which must not inherit the main PTY cwd or
@@ -175,11 +176,13 @@ type subscriptionRun struct {
 	// transcript-result stream. It is not an SDK stdin run.
 	interactive           bool
 	interactiveDone       chan struct{}
-	interactiveContextKey string // the settings/tools of this one PTY turn
-	interactiveUserNonce  string // pending native post-tool user context
-	interactiveUserAcked  bool   // retained before temporary files are removed
-	outerSession          string // outer client conversation persisted across PTY turns
-	threadKey             string // first user words that own outerSession
+	nativeLease           *os.File // held by Runtime and inherited by wrapper; only plugin feature-gated
+	interactiveContextKey string   // the settings/tools of this one PTY turn
+	firstTurnAnchorKey    string   // first user message hash, only for opt-in first-turn durable recovery
+	interactiveUserNonce  string   // pending native post-tool user context
+	interactiveUserAcked  bool     // retained before temporary files are removed
+	outerSession          string   // outer client conversation persisted across PTY turns
+	threadKey             string   // first user words that own outerSession
 	// readOnlyRecovery marks the explicit opt-in recovery turn: it was
 	// started with no tools at all, so any tool signal — a transcript
 	// tool_use row or an MCP callback — fails the turn instead of running.
@@ -429,7 +432,8 @@ func evalSymlinks(path string) string {
 
 func newSubscriptionBridge() *subscriptionBridge {
 	b := &subscriptionBridge{
-		runs: map[string]*subscriptionRun{}, calls: map[string]*subscriptionRun{},
+		toolJournal: newInteractiveToolJournal(),
+		runs:        map[string]*subscriptionRun{}, calls: map[string]*subscriptionRun{},
 		idle: map[string]*subscriptionRun{}, shelf: map[string]*savedSession{},
 		outerThreads: map[string]string{}, outerTurns: map[string]bool{},
 		liveOuter: map[string]*subscriptionRun{},
@@ -3088,6 +3092,31 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, mcpToolResult{Content: []map[string]any{{"type": "text", "text": found}}})
 		return
 	}
+	if run.interactive && run.firstTurnAnchorKey != "" {
+		// First-turn recovery is strictly opt-in. When it is enabled,
+		// tool dispatch must not outrun the real native Session ID: the
+		// callback can arrive before a transcript/init row is available.
+		// Wait briefly for authenticated native output, otherwise reject
+		// execution. Do NOT synthesize a Session ID or issue the tool first.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			run.mu.Lock()
+			known := run.sessionID != ""
+			run.mu.Unlock()
+			if known {
+				break
+			}
+			if time.Now().After(deadline) {
+				http.Error(w, "native session ID not yet verified; refusing first-turn tool dispatch", http.StatusServiceUnavailable)
+				return
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
 	waiter := make(chan mcpToolResult, 1)
 	run.mu.Lock()
 	if run.seenMCPCallIDs[call.ToolCallID] {
@@ -3095,10 +3124,37 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "duplicate native MCP callback ID; refusing tool replay", http.StatusConflict)
 		return
 	}
+	if b.toolJournal != nil && run.interactive && run.outerSession != "" {
+		argsDigest, evidenceErr := toolEvidenceArgumentsHash(call.Arguments)
+		var evidence interactiveToolEvidence
+		if evidenceErr == nil {
+			evidence, evidenceErr = toolEvidenceFor(run, call.Name, call.ToolCallID, argsDigest, "", "registered")
+		}
+		if evidenceErr == nil {
+			evidenceErr = b.toolJournal.append(evidence)
+		}
+		if evidenceErr != nil {
+			run.mu.Unlock()
+			log.Printf("Claude interactive durable tool registration failed: %v", evidenceErr)
+			http.Error(w, "durable tool registration unavailable; refusing execution", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	if run.seenMCPCallIDs == nil {
 		run.seenMCPCallIDs = map[string]bool{}
 	}
 	run.seenMCPCallIDs[call.ToolCallID] = true
+	// On a truly first canonical turn, a tool callback may arrive before
+	// any complete assistant text reply. Persist a *dirty* checkpoint only
+	// when the native Wrapper has provided its real session ID. Do this
+	// before dispatching an action to Desktop; if persistence fails, no
+	// client-side tool gets permission to run.
+	if err := run.persistFirstToolAnchorLocked(); err != nil {
+		run.mu.Unlock()
+		log.Printf("Claude interactive first-turn durable anchor refused: %v", err)
+		http.Error(w, "first-turn durable ownership unavailable; refusing tool execution", http.StatusServiceUnavailable)
+		return
+	}
 	if result, ok := run.early[call.ToolCallID]; ok {
 		delete(run.early, call.ToolCallID)
 		run.mu.Unlock()
@@ -3346,6 +3402,13 @@ func (b *subscriptionBridge) removeRun(run *subscriptionRun) {
 	if interactive && tree != nil && done != nil {
 		<-done
 	}
+	// Do not release the per-outer process lease until the wrapper has been
+	// reaped. The wrapper also inherits the FD, so Runtime death alone cannot
+	// make the lock appear free while the original process remains active.
+	if run.nativeLease != nil {
+		releaseInteractiveNativeLease(run.nativeLease)
+		run.nativeLease = nil
+	}
 	b.mu.Lock()
 	delete(b.runs, run.token)
 	if run.idleKey != "" && b.idle[run.idleKey] == run {
@@ -3446,7 +3509,154 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	// before reaping it. Never displace a live client tool callback: it may
 	// still have side effects in the caller's environment.
 	recoveryClaimed := false
-	if run == nil && optInCurrent >= 0 && outerSession != "" {
+	var legacyPrompt string
+	legacyApproved := false
+	if run == nil && os.Getenv("MAGPIE_CLAUDE_LEGACY_OPERATOR_APPROVED") == "1" && interactiveToolContinuation(req) {
+		// Metadata only: do not log prompts, tool arguments, credentials,
+		// the full conversation identifier, or result bodies. This proves
+		// whether Desktop's pending MCP retry is reaching the authorized
+		// legacy thread, without relying on a queued slash command.
+		var cert struct {
+			OuterKey   string `json:"outer_key"`
+			LastToolID string `json:"last_tool_id"`
+			Model      string `json:"model"`
+		}
+		bytes, readErr := os.ReadFile(os.Getenv("MAGPIE_CLAUDE_LEGACY_RECOVERY_CERT"))
+		if readErr == nil && json.Unmarshal(bytes, &cert) == nil {
+			key := interactiveSessionStateKey(owner, outerSession)
+			log.Printf("Claude legacy handoff audit: outer_match=%t last_tool_result=%t model_match=%t explicit=%t", cert.OuterKey == key, legacyOperatorAuthorizedResult(req, cert.LastToolID), cert.Model == model, legacyUserExplicitRestore(req))
+			if cert.OuterKey != key && cert.Model == model && legacyOperatorAuthorizedResult(req, cert.LastToolID) {
+				// The certificate was assembled using a pre-Desktop workspace key.
+				// Log only the SHA-256 of the authenticated live session identity,
+				// not owner, raw headers, conversation text or tool-result body.
+				// A human operator verifies this value before atomically updating
+				// the private 0600 certificate. No automatic self-binding occurs.
+				log.Printf("Claude legacy exact-result identity: outer_present=%t owner_present=%t authenticated_outer_sha256=%s", outerSession != "", owner != "", key)
+			}
+		}
+	}
+	if run == nil && outerSession != "" {
+		_, hasSaved := rt.bridge.interactiveSession(owner, outerSession)
+		if !hasSaved {
+			var legacyEligible bool
+			legacyPrompt, legacyEligible, err = eligibleLegacyMigration(owner, outerSession, model, req)
+			if legacyEligible {
+				if os.Getenv("MAGPIE_CLAUDE_NATIVE_TMUX_GUARD") != "1" {
+					msg := "Claude legacy recovery requires native session fencing"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+				if err != nil {
+					log.Printf("Claude interactive legacy migration evidence rejected: %v", err)
+					msg := "Claude legacy recovery certificate or native transcript could not be verified; refusing tool replay"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+				if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
+					msg := "Claude legacy recovery already in flight"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+				recoveryClaimed = true
+				defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
+				if rt.bridge.interactiveOuterOwner(owner, outerSession) != nil {
+					msg := "Claude legacy recovery refused: live native owner"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+				lease, leaseErr := acquireInteractiveNativeLease(owner, outerSession)
+				if leaseErr != nil {
+					msg := "Claude legacy recovery refused: native process lease is still owned"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+				if err := claimLegacyMigration(owner, outerSession); err != nil {
+					releaseInteractiveNativeLease(lease)
+					log.Printf("Claude legacy recovery claim refused: %v", err)
+					msg := "Claude legacy recovery already claimed; refusing duplicate model execution"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+				releaseInteractiveNativeLease(lease)
+				req.Messages = append(slices.Clone(req.Messages), Message{Role: "user", Parts: []Part{{Kind: Text, Text: "/magpie-recover"}}})
+				req = interactiveSanitizeReadOnly(req)
+				legacyApproved = true
+				optInCurrent = interactiveReadOnlyOptInIndex(req)
+				recoveryIdx = optInCurrent
+				if recoveryIdx < 0 {
+					msg := "Claude legacy recovery failed to establish a read-only sentinel"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+				log.Print("Claude interactive legacy session verified: starting one-time, tool-free context reconstruction")
+			}
+		}
+	}
+	// The dedicated old-thread recovery command is never a normal user
+	// request. If the certificate was absent, wrong, already used or a
+	// checkpoint already exists, fail closed instead of bootstrapping a
+	// tool-enabled new run on an unrelated conversation.
+	if run == nil && !legacyApproved && legacyUserExplicitRestore(req) {
+		msg := "Claude legacy recovery is not eligible for this conversation; refusing an unverified history restart"
+		return writeError(w, from, http.StatusConflict, msg), msg
+	}
+	// An orphaned MCP tool_result can be a legitimate Desktop completion of
+	// an action whose native Claude process died. Only the opt-in journal can
+	// authorize ONE automatic, tool-free context-reconstruction response;
+	// never put a tool result back into a new native MCP callback, and never
+	// start a new tool-enabled PTY from the stale caller history.
+	if run == nil && optInCurrent < 0 && rt.bridge.toolJournal != nil &&
+		os.Getenv("MAGPIE_CLAUDE_AUTO_RECOVER_ORPHANS") == "1" && outerSession != "" &&
+		interactiveToolContinuation(req) {
+		// A single wrapper lock is not enough: tmux/Claude may have survived
+		// a SIGKILL of the owning wrapper. Never enter unattended recovery
+		// unless the detached pane liveness fence is also explicitly active.
+		if os.Getenv("MAGPIE_CLAUDE_NATIVE_TMUX_GUARD") != "1" {
+			msg := "Claude interactive orphan recovery requires native tmux process fencing"
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
+		saved, ok := rt.bridge.interactiveSession(owner, outerSession)
+		if ok && saved.Dirty && (saved.Model == "" || saved.Model == model) &&
+			validateInteractiveToolContinuation(req) == nil {
+			if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
+				msg := "Claude interactive automatic read-only recovery is already in flight"
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
+			recoveryClaimed = true
+			defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
+			if rt.bridge.interactiveOuterOwner(owner, outerSession) != nil {
+				msg := "Claude interactive native execution may still be active; refusing automatic takeover"
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
+			// A different Runtime process may still have the original native
+			// Claude wrapper alive. The in-memory liveOuter lookup above cannot
+			// observe it. A live wrapper inherits the lock FD across Runtime
+			// crashes, so probe the OS lease BEFORE consuming a one-shot claim.
+			lease, leaseErr := acquireInteractiveNativeLease(owner, outerSession)
+			if leaseErr != nil {
+				msg := "Claude interactive native session is still owned or cannot be fenced; refusing recovery"
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
+			if guardErr := inspectInteractiveTmuxGuard(owner, outerSession, true); guardErr != nil {
+				releaseInteractiveNativeLease(lease)
+				log.Printf("Claude interactive detached native session recovery refused: %v", guardErr)
+				msg := "Claude interactive detached native tmux state cannot be proven inactive; refusing recovery"
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
+			if err := rt.bridge.toolJournal.claimOrphanRecovery(owner, outerSession, req); err != nil {
+				releaseInteractiveNativeLease(lease)
+				log.Printf("Claude interactive automatic recovery refused: %v", err)
+				msg := "Claude interactive orphan result lacks complete durable ownership evidence; refusing tool replay"
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
+			// Hold the detached-session ownership probe lease through the
+			// fsynced WAL claim. After release, the ordinary read-only launch
+			// must reacquire the same lease and recheck tmux before starting.
+			releaseInteractiveNativeLease(lease)
+			req.Messages = append(slices.Clone(req.Messages), Message{Role: "user", Parts: []Part{{Kind: Text, Text: "/magpie-recover"}}})
+			optInCurrent = interactiveReadOnlyOptInIndex(req)
+			if optInCurrent < 0 {
+				msg := "Claude interactive automatic recovery sentinel could not be validated"
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
+			recoveryIdx = optInCurrent
+			log.Print("Claude interactive accepted one-shot durable orphan result: beginning tool-free recovery")
+		}
+	}
+	if run == nil && optInCurrent >= 0 && outerSession != "" && !recoveryClaimed {
 		saved, ok := rt.bridge.interactiveSession(owner, outerSession)
 		if ok && saved.Dirty && (saved.Model == "" || saved.Model == model) {
 			if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
@@ -3486,7 +3696,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			req.SearchTool = search.Name
 		}
 	}
-	if interactiveToolContinuation(req) {
+	if interactiveToolContinuation(req) && !(run == nil && legacyMigrationWasClaimed(owner, outerSession) && cleanCheckpointNewUserSuffix(rt.bridge, owner, outerSession, model, req)) {
 		// A PTY tool result belongs exclusively to the existing live run.
 		// If its callback has expired, do not fall through to start() and
 		// replay the whole caller history into a fresh session or claude -p.
@@ -3585,6 +3795,21 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			}
 		}
 		if err == nil && events == nil {
+			if run.interactive && rt.bridge.toolJournal != nil && run.outerSession != "" && len(results) != 0 {
+				err = rt.bridge.toolJournal.verifyResults(run, results)
+				if err != nil {
+					// A missing/corrupt WAL entry can mean the client tool ran
+					// before the crash. Never fall into the generic expired-run
+					// branch below, which would bootstrap a new PTY and replay
+					// uncertain side-effecting work.
+					log.Printf("Claude interactive durable result rejected: %v", err)
+					run.abort()
+					msg := "Claude interactive durable tool handoff could not be verified; refusing execution replay"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+			}
+		}
+		if err == nil && events == nil {
 			events, err = run.continueWith(results, more)
 		}
 		if err == nil && userContextNonce != "" {
@@ -3596,6 +3821,13 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 		if err != nil {
 			run.abort()
+			if run.interactive {
+				// continueWith itself may fail after an external tool
+				// already had side effects. Starting a fresh PTY from
+				// the caller's history would not be an exact-once replay.
+				msg := "Claude interactive native continuation failed; refusing uncertain tool replay"
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
 			// it ended while it waited: a new one is told the whole
 			// conversation
 			run, how = nil, runExpired
@@ -3617,7 +3849,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			req.Messages = interactiveRecoveryMessages(req, recoveryCurrent)
 		}
 		saved, savedOK := rt.bridge.interactiveSession(owner, outerSession)
-		readOnly := recoveryIdx >= 0 && savedOK && saved.Dirty && outerSession != ""
+		readOnly := legacyApproved || (recoveryIdx >= 0 && savedOK && saved.Dirty && outerSession != "")
 		// One in-flight interactive turn per outer conversation, whatever
 		// kind it is. An opt-in recovery turn and an ordinary start are the
 		// same claim so a second request can never race a first start into a
@@ -3640,7 +3872,12 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 				rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
 			}()
 		}
-		run, events, err = start(r.Context(), req)
+		if legacyApproved {
+			ctx := context.WithValue(r.Context(), legacyMigrationContextKey{}, true)
+			run, events, err = rt.bridge.startInteractiveWithPrompt(ctx, req, model, "", owner, outerSession, legacyPrompt, "", true)
+		} else {
+			run, events, err = start(r.Context(), req)
+		}
 		if err == nil {
 			run.mu.Lock()
 			keepPrivateImage := run.interactive && len(run.images) > 0 && !readOnly

@@ -185,6 +185,44 @@ func (b *subscriptionBridge) saveInteractiveSession(owner, outerSession string, 
 	return nil
 }
 
+// Persist a first-turn recovery anchor only after the real native Claude
+// session ID and the first registered callback are both known. This anchor
+// is always Dirty, lacks an assistant reply, and can authorize only the
+// existing tool-free recovery flow; it MUST NOT be treated as a completed
+// transcript checkpoint or used to resume an uncertain native tool.
+func (r *subscriptionRun) persistFirstToolAnchorLocked() error {
+	if r == nil || r.firstTurnAnchorKey == "" || r.sessionID == "" || r.outerSession == "" ||
+		r.bridge == nil || r.bridge.toolJournal == nil || len(r.seenMCPCallIDs) == 0 {
+		return nil
+	}
+	b := r.bridge
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	path := interactiveSessionStatePath()
+	if raw, err := os.ReadFile(path); err == nil {
+		var checked interactiveSessionState
+		if json.Unmarshal(raw, &checked) != nil || checked.Version != interactiveSessionStateVersion || checked.Sessions == nil {
+			return errors.New("existing checkpoint store is invalid; refusing first-turn anchor")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	state := readInteractiveSessionState()
+	key := interactiveSessionStateKey(r.owner, r.outerSession)
+	if old, ok := state.Sessions[key]; ok {
+		if old.SessionID == r.sessionID && old.Dirty && old.ConvKey == r.firstTurnAnchorKey && old.ReplyKey == "" {
+			return nil // second callback or a repeated native init event
+		}
+		return errors.New("a distinct checkpoint already owns this conversation")
+	}
+	state.Sessions[key] = interactiveSessionEntry{
+		SessionID: r.sessionID, Model: r.model, ThreadKey: r.threadKey,
+		ConvKey: r.firstTurnAnchorKey, ContextKey: r.interactiveContextKey,
+		Dirty: true, UpdatedAt: time.Now().UTC(),
+	}
+	return writeInteractiveSessionState(state)
+}
+
 func (b *subscriptionBridge) markInteractiveSessionDirty(owner, outerSession string) {
 	if outerSession == "" {
 		return

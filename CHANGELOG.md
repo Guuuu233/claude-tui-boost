@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — guarded native recovery and one-shot legacy migration
+
+- Extend the native wrapper lifetime cap and MCP handoff safety; record checksummed tool evidence and guard interrupted native sessions against unsafe replay.
+- Add opt-in native session file leases, detached tmux owner checks, first-turn dirty anchors and bounded, **tool-free** reconstruction after verified crashes. These options remain disabled by default.
+- Add explicit, certificate-bound, one-shot read-only migration for older interrupted Desktop conversations. The original tool call is **never** replayed; operators must independently verify the original transcript and side effects before enabling this path.
+- Include automated hard-kill, tmux and recovery regression tests. This unreleased source snapshot does not promise exactly-once execution or production-safe migration of arbitrary legacy sessions.
+
 ## 0.1.1 — long-running MCP tools
 
 - Raise the configured timeout **only for the generated `magpie` MCP server** to 1,800,000 ms (30 minutes); preserve other MCP servers and global Claude Code settings.
