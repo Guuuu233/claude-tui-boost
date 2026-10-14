@@ -46,7 +46,7 @@ bun install --ignore-scripts
 bun test
 ```
 
- To verify binaries against this release, run `shasum -a 256 -c SHA256SUMS` on macOS/Linux. To **rebuild all eight** with the release Go 1.27.1 toolchain and compare byte-for-byte:
+ To verify binaries against this release, run `shasum -a 256 -c SHA256SUMS` on macOS/Linux. For a **strict byte-for-byte comparator** of rebuilt binaries against the checked-in artifacts, using Go 1.27.1:
 
 ```sh
 bash scripts/verify-source-binaries.sh
@@ -59,7 +59,7 @@ To build individual binaries using Go 1.27 or newer:
 (cd runtime && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../bin/magpie-tui-mcp-helper.linux-amd64 ./cmd/magpie-tui-mcp-helper)
 ```
 
-Repeat with `GOOS=darwin` and `GOARCH=arm64/amd64`, or `GOOS=linux GOARCH=arm64` for other supported targets. Cross-compiled binaries have not all been tested natively. The included `SHA256SUMS` describes artifacts built in the release environment; exact cross-machine hashes can vary with toolchain details.
+Repeat with `GOOS=darwin` and `GOARCH=arm64/amd64`, or `GOOS=linux GOARCH=arm64` for other supported targets. Cross-compiled binaries have not all been tested natively. **Important: the v0.1.0 GitHub Actions Ubuntu build produces different binary hashes from a macOS-hosted Go 1.27.1 build of identical source.** Therefore, the strict comparator above can fail on a different host even if the build is legitimate. Use the GitHub Actions log and released `SHA256SUMS` for release-artifact provenance and integrity; do not interpret a cross-host hash mismatch by itself as compromised source or claim bit-for-bit cross-host reproducibility. The exact cause of this toolchain/environment divergence has not yet been isolated.
 
 ## Provenance and maintenance
 
