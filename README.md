@@ -51,14 +51,14 @@ magpie plugin login claude-tui
 
 - MCP 工具长任务：生成的插件 MCP 服务调用上限为 30 分钟；交互式回调等待最长 90 分钟、原生运行计时器 12 小时；一次性调用原有的 5 分钟等待规则不变。**这些不是保证任务必定完成的 SLA**。
 - 动态历史内容：在 `main` 当前源码中，只有**严格匹配**的 token 余额提示可以在旧用户消息的独立文本块被删除时忽略；其他用户指令、工具参数和普通提醒依然严格校验。
-- 受控只读恢复（`main` 未发布改动）：`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1` **默认关闭**。只有活跃的原始工具回调、完全匹配的会话与模型、安全设置、已标记 Dirty 的持久化 checkpoint 等条件全部满足，才允许终止失配进程并启动一次**禁用工具的只读恢复轮次**。不会重新执行已经完成的修改，也不能复活此前已死亡的 MCP 回调。
+- 受控只读恢复（v0.2.3）：`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1` **默认关闭**。只有活跃的原始工具回调、完全匹配的会话与模型、安全设置、已标记 Dirty 的持久化 checkpoint 等条件全部满足，才允许终止失配进程并启动一次**禁用工具的只读恢复轮次**。不会重新执行已经完成的修改，也不能复活此前已死亡的 MCP 回调。
 - 旧会话的定向迁移需要私有证书与人工核查，不会作为普通插件安装功能开放。更完整的机制、其他开关、限制及拒绝场景见 [RECOVERY.md](RECOVERY.md)。
 
 **托管安装配置**：六个经过明确允许的恢复环境变量只能取 `0` 或 `1`，且要在**Magpie 宿主服务启动环境**中设置，再在空闲时重新加载插件。仅在本机 Desktop 或终端设置变量，不能改变另一台 VPS 上的 Magpie 进程。不要为了追求“无感恢复”而一次性启用全部开关。生产环境是否启用，以及测试通过与否，不能从 GitHub 源码默认值直接推断。
 
 ### 版本、更新与兼容性
 
-- **GitHub 默认分支 `main` 是源码最新状态**；`v0.2.2` 仍是最近一次正式打包版本。本次 409 历史兼容补丁在新提交推送后属于**未发 Release 的源码更新**。如果你按版本标签安装，不会自动得到这些改动；以实际安装的 Git SHA 为准。
+- **v0.2.3 已包含本次 409 历史兼容补丁**。用户可以在 Magpie 中更新插件，或明确安装版本 `magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.3`。使用固定旧版本的安装不会自动获得新修复；以实际安装的标签与 Git SHA 为准。升级前应结束正在执行的工具、保留旧状态及回滚途径。
 - 插件携带自己的 Runtime、Helper 和 Wrapper；升级 Magpie **不会自动替换这些文件**，却可能修改插件加载、模型 API 转换、会话标识、流式请求与登录流程，因此**不能承诺对所有未来 Magpie/Claude Code 版本兼容**。有按已验证版本、最新发布版、上游 `main` 执行的兼容检查，详见 [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md)。
 - 支持 macOS 与 Linux 的四种 CPU/OS 组合发布构建；交叉编译通过**不代表**四种平台全部经历真实 OAuth 与 GUI 测试。用户数据目录、订阅额度、历史会话和私人恢复凭证不会随 GitHub 安装包分发。
 
@@ -113,7 +113,7 @@ The existing **连接已登录 Claude** method remains available for advanced us
 
 ### How it works and what remains unsupported
 
-**Latest main-branch source (unreleased):** An exact generated token-budget reminder inside an old user message may be ignored during handoff when no other content changed. For other history drift, an opt-in, *tool-free* fallback (`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1`) requires the exact live tool ID, correct account/model/safeguards, canonical thread and an existing Dirty checkpoint. This cannot revive dead callbacks, blindly replay an Edit/Write/Bash or guarantee that every 409 disappears. See [RECOVERY.md](RECOVERY.md); the setting is not part of the `v0.2.2` tag.
+**Available since v0.2.3:** An exact generated token-budget reminder inside an old user message may be ignored during handoff when no other content changed. For other history drift, an opt-in, *tool-free* fallback (`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1`) requires the exact live tool ID, correct account/model/safeguards, canonical thread and an existing Dirty checkpoint. This cannot revive dead callbacks, blindly replay an Edit/Write/Bash or guarantee that every 409 disappears. See [RECOVERY.md](RECOVERY.md); this opt-in flag is included in v0.2.3 and remains disabled by default.
 
 The bridge keeps a Claude Code process alive across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation, parallel tools and read-only recovery of certain interrupted conversations. Because the Desktop and CLI can reshape historic messages, some tool handoffs can still return HTTP 409 rather than risk executing a tool twice. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
 

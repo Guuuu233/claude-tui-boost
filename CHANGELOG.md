@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased — historical-message continuity and bounded recovery
+## 0.2.3 — historical-message continuity and bounded recovery
 
 - Preserve a live MCP callback across exact, generated token-budget reminder removal from a historical user message; retain strict comparison of user instructions, tool identities, arguments, image payloads and non-budget reminders.
 - Add opt-in `MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1`: only a verified exact live tool ID and same owner/model/safeguards plus an existing Dirty checkpoint and canonical thread permit **tool-free** fallback after history drift. It cannot replay or recover a dead callback.
 - Pass the sixth boolean through both managed runtime launch stages (off by default); add regression, race, supervisor-environment and Linux isolated checks.
-- Expand English/Chinese README and recovery documentation. No new release tag is created by this main-branch update.
+- Expand English/Chinese README and recovery documentation; publish all four supported Runtime builds with SHA-256 checksums.
 
 ## 0.2.2 — managed settings and host compatibility
 

@@ -10,7 +10,7 @@ Old conversations created before the journal/marker changes **cannot be automati
 
 These features have Go tests (including real process SIGKILL and isolated tmux scenarios) and a native Claude isolated-acceptance path, but do not establish general exactly-once tool semantics or a safe migration of all existing sessions. Roll out per fresh conversation, keep backups and preserve old checkpoints and transcripts. See package tests for the expected refusal behavior.
 
-## Historical-message changes during an MCP tool handoff (unreleased)
+## Historical-message changes during an MCP tool handoff (v0.2.3)
 
 Claude Desktop may add or remove a **standalone generated token-budget reminder** inside a historical user message. A strictly recognized part, exactly matching `<system-reminder><total_tokens>N tokens left</total_tokens></system-reminder>` (including supported line-break variants), can now be normalized for live-tool continuity. User instructions, mixed reminders, tool identities and tool arguments are never normalized away. Not every three-part-to-two-part change is a token-budget notice; unrecognized edits still fail closed.
 
