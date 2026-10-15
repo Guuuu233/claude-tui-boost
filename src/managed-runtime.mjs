@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createHooks, PROVIDER_ID, _internal } from "./index.mjs";
+import { runtimeEnvironment } from "./runtime-environment.mjs";
 import { beginFirstConnect, findExecutable, setupEnvironment } from "./first-connect.mjs";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -191,7 +192,7 @@ export function createManagedHooks({
   const dependencyProbe = deps ?? (() => probeDeps(env));
   const loaderCache = new Map(); // storedKey -> built loader options
 
-  const safeChildEnv = profile => ({ ...setupEnvironment(env, home), CLAUDE_CONFIG_DIR: profile });
+  const safeChildEnv = profile => runtimeEnvironment({ ...setupEnvironment(env, home), CLAUDE_CONFIG_DIR: profile }, env);
 
   const waitForExit = (child, ms) => new Promise(resolveExit => {
     if (child.exitCode !== null || child.signalCode !== null) return resolveExit(true);

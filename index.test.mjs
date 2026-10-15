@@ -14,6 +14,15 @@ describe("Claude TUI independent entry", () => {
     const config = { provider: {} }
     await hooks.config(config)
     expect(config.provider["claude-tui"].npm).toBe("@ai-sdk/anthropic")
-    expect(Object.keys(config.provider["claude-tui"].models).length).toBeGreaterThan(0)
+    expect(Object.keys(config.provider["claude-tui"].models)).toEqual(["sonnet", "opus", "haiku"])
   })
+})
+
+// The installed entry must preserve Magpie's documented second argument.
+test("public entry forwards explicit host options", async () => {
+  const hooks = await ClaudeTUIPlugin({}, { runtimeURL: "http://127.0.0.1:12345/v1/", models: { custom: { name: "Custom model" } } })
+  const config = {}
+  await hooks.config(config)
+  expect(Object.keys(config.provider["claude-tui"].models)).toEqual(["custom"])
+  expect(config.provider["claude-tui"].api).toBe("http://127.0.0.1:12345/v1/")
 })

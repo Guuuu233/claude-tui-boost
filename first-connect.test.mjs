@@ -147,10 +147,10 @@ test('automatic auth does not save an account before verified setup', async t =>
 
 test('verified automatic setup starts the actual bundled runtime before returning a saved key', async t => {
   const f = await fixture(t); const profile = join(f.home, 'profile'); await mkdir(profile);
-  const hooks = createManagedHooks({ env: { ...f.env, ANTHROPIC_BASE_URL: 'http://localhost:9999' }, input: { directory: join(f.home, 'plugin') },
+  const hooks = createManagedHooks({ env: { ...f.env, ANTHROPIC_BASE_URL: 'http://localhost:9999', MAGPIE_CLAUDE_NATIVE_TMUX_GUARD: '1' }, input: { directory: join(f.home, 'plugin') },
     onboarding: async () => ({ opened: true, finish: async () => ({ profile, models: ['sonnet', 'opus', 'haiku'] }) }),
     deps: async () => ({ bun: '/bin/fake', claude: join(f.bin, 'claude'), tmux: join(f.bin, 'tmux') }),
-    spawnRuntime: (args, opts) => { const child = spawn(process.execPath, args, { ...opts, stdio: ['pipe', 'ignore', 'pipe'] }); f.children.push(child); return child; },
+    spawnRuntime: (args, opts) => { assert.equal(opts.env.MAGPIE_CLAUDE_NATIVE_TMUX_GUARD, '1'); const child = spawn(process.execPath, args, { ...opts, stdio: ['pipe', 'ignore', 'pipe'] }); f.children.push(child); return child; },
   });
   const flow = await hooks.auth.methods[0].authorize(); const result = await flow.callback();
   assert.equal(result.type, 'success', result.error); assert.ok(result.key.startsWith('mgtui1.'));

@@ -26,6 +26,7 @@
 //   * Prints nothing the runtime writes; the key file is never read, never
 //     logged, never copied out of the state dir.
 import { spawn } from "node:child_process";
+import { runtimeEnvironment } from "../src/runtime-environment.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -190,15 +191,11 @@ for (const f of [portFile, modelsFile]) {
 
 // Scrubbed child env: the runtime authenticates through its own key file;
 // inherited API credentials are removed; configured proxy/certificate settings are preserved.
-const env = {};
+const env = runtimeEnvironment({}, process.env);
 for (const keep of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "USERPROFILE", "CLAUDE_CONFIG_DIR", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"]) {
   if (process.env[keep] !== undefined) env[keep] = process.env[keep];
 }
-if (process.env.MANAGED_RUNTIME_EXTRA_ENV) {
-  for (const name of process.env.MANAGED_RUNTIME_EXTRA_ENV.split(",")) {
-    if (name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && process.env[name] !== undefined) env[name] = process.env[name];
-  }
-}
+
 
 const child = spawn(runtime, [
   "--serve",

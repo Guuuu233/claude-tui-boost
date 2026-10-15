@@ -7,7 +7,7 @@ on:
         description: 'Semver tag to create (e.g. v0.1.1)'
         required: true
         type: string
-        default: v0.2.1
+        default: v0.2.2
 
 permissions:
   contents: write
@@ -26,7 +26,20 @@ jobs:
           bun-version: '1.4.2'
       - name: Install tmux for isolated SSH-login tests
         run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Load verified Magpie host for mandatory compatibility checks
+        uses: actions/checkout@v4
+        with:
+          repository: yetone/magpie
+          ref: 95e7c6bcc07629897f6703c31eaef477fcee4a13
+          path: .compat-host
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /internal/plugin/host.js
+            /LICENSE
       - name: Verify plugin and isolated first-connect tests
+        env:
+          MAGPIE_TUI_TEST_HOST: ${{ github.workspace }}/.compat-host/internal/plugin/host.js
         run: bun test
       - uses: actions/setup-go@v6
         with:

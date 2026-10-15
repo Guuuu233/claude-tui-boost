@@ -1,0 +1,60 @@
+name: Magpie host compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '25 4 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  host-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [verified, latest-release, upstream-main]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Select upstream revision
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            verified) ref=95e7c6bcc07629897f6703c31eaef477fcee4a13 ;;
+            latest-release) ref=$(gh api repos/yetone/magpie/releases/latest --jq .tag_name) ;;
+            upstream-main) ref=main ;;
+          esac
+          sha=$(gh api "repos/yetone/magpie/commits/$ref" --jq .sha)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Magpie $TARGET ($ref): $sha" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v4
+        with:
+          repository: yetone/magpie
+          ref: ${{ steps.upstream.outputs.sha }}
+          path: .compat-host
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /internal/plugin/host.js
+            /LICENSE
+      - name: Run isolated login, runtime and public-entry host contracts
+        env:
+          MAGPIE_TUI_TEST_HOST: ${{ github.workspace }}/.compat-host/internal/plugin/host.js
+        run: bun test

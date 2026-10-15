@@ -1,3 +1,10 @@
+## 0.2.2 — managed settings and host compatibility
+
+- Carry five explicit boolean recovery flags through both managed startup boundaries; leave them opt-in. Remove arbitrary supervisor environment forwarding and do not inherit private legacy migration credentials.
+- Match unsigned-in model placeholders to the automatic setup's sonnet/opus/haiku aliases; preserve custom models and forward the host's explicit options through the installed entry.
+- Include recovery/changelog/host compatibility docs in the package; remove stale Windows launcher and old archive instructions.
+- Exercise the actual public entry against real Magpie host code, covering requests, streamed replies, tool-result continuation, account scope, identity refusal and cancellation. Add daily verified/latest-release/main checks and require the verified host tests in release CI.
+
 # Changelog
 
 ## 0.2.1 — resilient SSH login

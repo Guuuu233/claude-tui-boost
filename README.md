@@ -45,6 +45,10 @@ The bridge keeps a Claude Code process alive across turns and translates MCP `to
 
 Current user-message images are supported; historic image replay is not. macOS arm64 and Linux amd64 have received limited local/remote runtime checks; macOS amd64 and Linux arm64 builds are cross-compiled only. Windows-native PTY execution is not supported. See [COMPATIBILITY.md](COMPATIBILITY.md). Experimental crash recovery and strict legacy-migration gates are described in [RECOVERY.md](RECOVERY.md).
 
+## Magpie updates
+
+Magpie application updates do not replace this plugin's bundled runtime, but host hooks, gateway translation and session handling can change its behavior. See [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md) for the verified upstream commit, daily compatibility checks, version pinning and rollback boundaries. Future-version compatibility is not guaranteed.
+
 ## Test and independently build
 
 There is no lockfile in the initial snapshot. Dependencies are declared in `package.json` (`zod` is pinned); avoid executing dependency lifecycle scripts:

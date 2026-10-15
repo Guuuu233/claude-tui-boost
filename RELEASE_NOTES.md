@@ -1,15 +1,9 @@
-## v0.2.1 — smoother AI-assisted SSH/VPS login
+# v0.2.2 — managed settings and Magpie host compatibility
 
-Headless setup now places the Claude login phase in an isolated private tmux/PTY. If the AI SSH terminal disconnects, reconnecting to the same command retrieves the same login instead of starting another one.
+Fixes recovery environment propagation through managed startup (five boolean flags only; still opt-in), unsigned-in model placeholders, and forwarding of explicit Magpie plugin options. Private legacy certificates are not inherited. Arbitrary MANAGED_RUNTIME_EXTRA_ENV forwarding is removed.
 
-- Structured status reports an official `authorizationURL` for the user to open on their own computer; supports current and legacy official login routes and rejects localhost callback links.
-- Returned authorization codes are accepted on stdin, never as arguments. Duplicate submissions and expired sessions are refused.
-- Printed control commands provide status, attach, cancel and code submission. `start-detached` supports tools that cannot hold an SSH command open.
-- Independent ownership checks keep different login sessions apart. A bounded watcher cleans only the owned tmux server. Unexpected login process exits fail the pending sign-in.
-- Retains the dedicated-profile login and runtime-readiness checks from v0.2.0. `authenticated` is explicitly distinct from Magpie's completed connection.
+Includes RECOVERY.md and HOST_COMPATIBILITY.md in installed packages and refreshes compatibility documentation. Adds actual-host contract checks and daily compatibility CI against a verified commit, the latest Magpie release and upstream main. Release tests use the verified host so they cannot skip silently.
 
-Dependency installation may still need an interactive `ssh -tt` session for system permission prompts. A Magpie host restart or the existing nine-minute deadline ends the pending login. No new public callback ports are opened.
+Local evidence: isolated Bun/tmux tests against the deployed host snapshot and Magpie v0.1.1248/main commit 95e7c6bcc07629897f6703c31eaef477fcee4a13. Real new-user OAuth, full GUI installation and the entire Go gateway are not covered by the host contract test. No production service or existing account was modified. Future Magpie/Claude compatibility is not guaranteed.
 
-Validation uses real private tmux sessions and fake Claude/authorization codes, plus inspected host RPC and bundled runtime checks. Actual VPS/browser OAuth has not been exercised in this change. See [AI remote setup guide](https://github.com/Guuuu233/magpie-claude-tui-plugin/blob/main/AI_REMOTE_SETUP.md).
-
-**Security and policy:** This is third-party, unreviewed software, not supported by Magpie or Anthropic. It runs an authenticated Claude Code TUI, can modify Claude trust and hooks, and may enable bypass-permissions in its working directory. Subscription account/terms risks remain. See the [security documentation](https://github.com/Guuuu233/magpie-claude-tui-plugin#exact-security-and-configuration-effects).
+Unofficial experimental third-party plugin; not reviewed or endorsed by Magpie or Anthropic. Native Windows/WSL unsupported; macOS amd64/Linux arm64 cross-built only. See README for effects and limitations.
