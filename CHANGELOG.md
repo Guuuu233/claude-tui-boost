@@ -1,3 +1,12 @@
+# Changelog
+
+## Unreleased — historical-message continuity and bounded recovery
+
+- Preserve a live MCP callback across exact, generated token-budget reminder removal from a historical user message; retain strict comparison of user instructions, tool identities, arguments, image payloads and non-budget reminders.
+- Add opt-in `MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1`: only a verified exact live tool ID and same owner/model/safeguards plus an existing Dirty checkpoint and canonical thread permit **tool-free** fallback after history drift. It cannot replay or recover a dead callback.
+- Pass the sixth boolean through both managed runtime launch stages (off by default); add regression, race, supervisor-environment and Linux isolated checks.
+- Expand English/Chinese README and recovery documentation. No new release tag is created by this main-branch update.
+
 ## 0.2.2 — managed settings and host compatibility
 
 - Carry five explicit boolean recovery flags through both managed startup boundaries; leave them opt-in. Remove arbitrary supervisor environment forwarding and do not inherit private legacy migration credentials.
@@ -5,7 +14,6 @@
 - Include recovery/changelog/host compatibility docs in the package; remove stale Windows launcher and old archive instructions.
 - Exercise the actual public entry against real Magpie host code, covering requests, streamed replies, tool-result continuation, account scope, identity refusal and cancellation. Add daily verified/latest-release/main checks and require the verified host tests in release CI.
 
-# Changelog
 
 ## 0.2.1 — resilient SSH login
 

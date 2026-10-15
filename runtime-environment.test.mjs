@@ -22,7 +22,7 @@ setInterval(() => {}, 1000);
 `, { mode: 0o700 });
   const child = spawn(process.execPath, [fileURLToPath(new URL('./scripts/managed-runtime-supervisor.mjs', import.meta.url)), '--runtime', runtime, '--state-dir', state, '--ready-file', join(state, 'ready.json')], {
     env: { PATH: process.env.PATH, HOME: home, MAGPIE_CLAUDE_NATIVE_TMUX_GUARD: '1', MAGPIE_CLAUDE_DURABLE_TOOL_JOURNAL: '0',
-      MAGPIE_CLAUDE_AUTO_RECOVER_ORPHANS: 'yes', ANTHROPIC_API_KEY: 'fake-do-not-forward',
+      MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT: '1', MAGPIE_CLAUDE_AUTO_RECOVER_ORPHANS: 'yes', ANTHROPIC_API_KEY: 'fake-do-not-forward',
       MANAGED_RUNTIME_EXTRA_ENV: 'ANTHROPIC_API_KEY,MAGPIE_CLAUDE_LEGACY_OPERATOR_APPROVED', MAGPIE_CLAUDE_LEGACY_OPERATOR_APPROVED: '1' },
     stdio: ['pipe', 'ignore', 'pipe'],
   });
@@ -35,7 +35,7 @@ setInterval(() => {}, 1000);
       catch (e) { if (Date.now() > deadline || child.exitCode !== null) throw new Error('Supervisor did not become ready: ' + error); await new Promise(r => setTimeout(r, 20)); }
     }
     const observed = JSON.parse(await readFile(join(state, 'observed.json'), 'utf8'));
-    assert.deepEqual(observed, { MAGPIE_CLAUDE_NATIVE_TMUX_GUARD: '1', MAGPIE_CLAUDE_DURABLE_TOOL_JOURNAL: '0' });
+    assert.deepEqual(observed, { MAGPIE_CLAUDE_NATIVE_TMUX_GUARD: '1', MAGPIE_CLAUDE_DURABLE_TOOL_JOURNAL: '0', MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT: '1' });
   } finally {
     child.stdin.end();
     const timer = setTimeout(() => child.kill('SIGTERM'), 2000);

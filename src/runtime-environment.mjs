@@ -6,6 +6,7 @@ const recoveryFlags = [
   'MAGPIE_CLAUDE_AUTO_RECOVER_RETRY',
   'MAGPIE_CLAUDE_NATIVE_TMUX_GUARD',
   'MAGPIE_CLAUDE_FIRST_TURN_ANCHOR',
+  'MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT',
 ];
 
 export function runtimeEnvironment(base, source) {

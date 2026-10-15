@@ -1863,6 +1863,25 @@ func withoutDynamicTokenBudgetNotices(msgs []Message) []Message {
 			tokenBudgetSystemNotice.MatchString(strings.TrimSpace(m.Parts[0].Text)) {
 			continue
 		}
+		// Desktop can also append a *standalone* generated system-reminder
+		// part to a user message. During its tool handoff it sometimes drops
+		// that part, changing a three-text-part historical user row to two.
+		// Ignore only an entire, exact-form wrapped token counter. Never
+		// discard a real user part, a mixed reminder/instruction, or the
+		// tool result that this in-flight callback must authenticate.
+		if m.Role == "user" && len(m.Parts) > 1 {
+			kept := make([]Part, 0, len(m.Parts))
+			for _, p := range m.Parts {
+				if p.Kind == Text && strings.HasPrefix(strings.TrimSpace(p.Text), "<system-reminder>") &&
+					tokenBudgetSystemNotice.MatchString(strings.TrimSpace(p.Text)) {
+					continue
+				}
+				kept = append(kept, p)
+			}
+			if len(kept) != 0 && len(kept) < len(m.Parts) {
+				m.Parts = kept // copy of the message; never mutate caller input
+			}
+		}
 		filtered = append(filtered, m)
 	}
 	return filtered
@@ -3773,14 +3792,50 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	// run started anew is told the conversation as the client now has it.
 	if run != nil && !run.follows(req.Messages) {
 		if run.interactive {
-			log.Printf("Claude interactive tool handoff rejected: %s", run.historyMismatchDiagnostic(req.Messages))
+			run.mu.Lock()
+			parked := !run.parkedAt.IsZero()
+			sameSafeguards := bytes.Equal(run.safeguards, req.Safeguards) &&
+				(len(req.Safeguards) == 0 || run.safeguardBeta == req.SafeguardBeta)
+			run.mu.Unlock()
+			saved, checkpointExists := rt.bridge.interactiveSession(owner, outerSession)
+			if os.Getenv("MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT") == "1" &&
+				how == byExactID && outerSession != "" && run.outerSession == outerSession &&
+				run.owner == owner && run.model == model &&
+				checkpointExists && saved.Dirty && (saved.Model == "" || saved.Model == model) &&
+				saved.ThreadKey == firstWords(req) && parked && sameSafeguards && len(results) > 0 &&
+				rt.bridge.outerThread(owner, outerSession) == firstWords(req) {
+				// The current tool result has already passed exact live MCP ID,
+				// owner, model, tools and settings checks above. We cannot safely
+				// inject it into a native Claude turn that was told a different
+				// historical prefix. End that process and offer one tool-free
+				// reconstruction instead of turning a single history edit into
+				// endless orphan-result 409 retries. Nothing is replayed; the
+				// fresh Claude process must verify external side effects later.
+				log.Printf("Claude interactive matched history drift: bounded read-only recovery; %s", run.historyMismatchDiagnostic(req.Messages))
+				run.abort()
+				run, how, results = nil, "", nil
+				req.Messages = append(slices.Clone(req.Messages), Message{Role: "user", Parts: []Part{{Kind: Text, Text: "/magpie-recover"}}})
+				req = interactiveSanitizeReadOnly(req)
+				// This newly appended opt-in is the sole actionable recovery
+				// turn. A previous interruption-looking suffix must not trim
+				// it away in the ordinary abandoned-turn path below.
+				recoveryCurrent = -1
+				recoveryIdx = interactiveReadOnlyOptInIndex(req)
+				if recoveryIdx < 0 {
+					msg := "Claude interactive recovery sentinel refused; not replaying an uncertain tool"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
+			} else {
+				log.Printf("Claude interactive tool handoff rejected: %s", run.historyMismatchDiagnostic(req.Messages))
+				run.abort()
+				msg := "Claude interactive migration: history changed during tool handoff; refusing history replay. Send a new user message asking to verify completed tool results before continuing; do not retry or repeat the tool."
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
+		} else {
+			log.Printf("%s run on %s let go: earlier messages changed while it waited for tool results", name, model)
 			run.abort()
-			msg := "Claude interactive migration: history changed during tool handoff; refusing history replay. Send a new user message asking to verify completed tool results before continuing; do not retry or repeat the tool."
-			return writeError(w, from, http.StatusConflict, msg), msg
+			run, how = nil, ""
 		}
-		log.Printf("%s run on %s let go: earlier messages changed while it waited for tool results", name, model)
-		run.abort()
-		run, how = nil, ""
 	}
 	// the client offers a tool the run's agent was never told of, as Claude
 	// Code's ToolSearch loads a deferred one mid-turn: the run is handed it

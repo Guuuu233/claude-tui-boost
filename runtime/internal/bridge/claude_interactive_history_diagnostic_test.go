@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInteractiveHistoryMismatchDiagnostic(t *testing.T) {
@@ -99,6 +100,77 @@ func TestInteractiveChangedHistoryExplains409WithoutReplay(t *testing.T) {
 	r.mu.Unlock()
 	if !closed {
 		t.Fatal("uncertain run left active")
+	}
+}
+
+func TestInteractiveMatchedHistoryDriftOptInStartsOnlyReadOnlyReconstruction(t *testing.T) {
+	t.Setenv("MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT", "1")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	b := newSubscriptionBridge()
+	defer bridges.Delete(b)
+	rt := &runtimeTUI{bridge: b}
+	const owner, outer = "owner", "existing-outer"
+	// A new user message after the orphan-looking tool result makes the
+	// original request eligible for abandoned-turn tail trimming. Automatic
+	// recovery must not accidentally trim its own tool-free sentinel.
+	body := []byte(`{"model":"claude-opus-5-5","tools":[{"name":"echo","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"FIRST_IMMUTABLE_USER_TEXT"},{"role":"user","content":"CHANGED_SECOND_USER_TEXT"},{"role":"assistant","content":[{"type":"tool_use","id":"call-one","name":"echo","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-one","content":"already executed"}]},{"role":"user","content":"NEW_USER_MESSAGE_NOT_A_TOOL_RESULT"}]}`)
+	req, err := parseAnthropic(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.seedOuterThread(owner, outer, firstWords(req)); got != firstWords(req) {
+		t.Fatal("failed to seed canonical outer thread")
+	}
+	if err := b.saveInteractiveSession(owner, outer, interactiveSessionEntry{
+		SessionID: "inner-existing", Model: req.Model, ThreadKey: firstWords(req),
+		ConvKey: "known-persistent-conversation", ContextKey: turnKey(owner, req, nil), Dirty: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := &subscriptionRun{bridge: b, token: "live-run", interactive: true, owner: owner, outerSession: outer,
+		model: req.Model, parkedAt: time.Now(),
+		pending:               map[string]chan mcpToolResult{"call-one": make(chan mcpToolResult)},
+		shown:                 []shownCall{{id: "call-one", name: "echo"}},
+		tools:                 map[string]bool{"echo": true},
+		interactiveContextKey: turnKey(owner, req, nil),
+	}
+	run.heard([]Message{
+		req.Messages[0],
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "ORIGINAL_SECOND_USER_TEXT"}}},
+	})
+	b.runs[run.token] = run
+	b.calls["call-one"] = run
+	defer run.abort()
+	started := false
+	start := func(_ context.Context, got *Request) (*subscriptionRun, <-chan Event, error) {
+		started = true
+		if len(got.Tools) != 0 || got.WebSearch || got.ToolChoice != "" || len(got.Schema) != 0 {
+			t.Fatal("unsafe tool surface remained on history-drift reconstruction")
+		}
+		last := got.Messages[len(got.Messages)-1]
+		if last.Role != "user" || len(last.Parts) != 1 || last.Parts[0].Text != "/magpie-recover" {
+			t.Fatal("read-only recovery sentinel was not isolated at end")
+		}
+		if interactiveReadOnlyOptInIndex(got) < 0 {
+			t.Fatal("the next stage would not recognize the tool-free recovery")
+		}
+		prompt, err := renderInteractiveReadOnlyBootstrap(got)
+		if err != nil || prompt == "" || strings.Contains(prompt, "already executed") {
+			t.Fatalf("unsafe or invalid recovery bootstrap: err=%v empty=%t exposed_tool_result=%t", err, prompt == "", strings.Contains(prompt, "already executed"))
+		}
+		return nil, nil, errors.New("mock read-only start intentionally blocked")
+	}
+	w := httptest.NewRecorder()
+	code, _ := rt.serveMessagesInner(w, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(string(body))),
+		protoAnthropic, "Claude Code", req.Model, owner, outer, body, &Usage{}, start)
+	if code != http.StatusBadGateway || !started {
+		t.Fatalf("expected one tool-free start attempt, got HTTP %d started=%t", code, started)
+	}
+	run.mu.Lock()
+	closed := run.closed
+	run.mu.Unlock()
+	if !closed {
+		t.Fatal("original callback was not terminated before the recovery")
 	}
 }
 
