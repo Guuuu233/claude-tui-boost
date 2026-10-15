@@ -1,17 +1,17 @@
 # Changelog
 
-## Unreleased — native TUI tool-wait timeout fix
+## 0.1.2 — native TUI tool-wait timeout fix
 
 - Fix a native interactive TUI bug that mistakenly applied the five-minute one-shot tool-result wait limit to long client `Bash`/`Write` calls. In affected turns, the callback was destroyed after five minutes and Desktop retries returned HTTP 409.
 - Use a bounded 90-minute interactive tool wait and a 12-hour active native watchdog, matching the wrapper process cap; preserve the five-minute timeout for ordinary one-shot calls.
 - Does not retroactively recover terminated tool callbacks; always verify previous tool side effects before continuing.
 
-## Unreleased — guarded native recovery and one-shot legacy migration
+### Guarded native recovery and one-shot legacy migration
 
 - Extend the native wrapper lifetime cap and MCP handoff safety; record checksummed tool evidence and guard interrupted native sessions against unsafe replay.
 - Add opt-in native session file leases, detached tmux owner checks, first-turn dirty anchors and bounded, **tool-free** reconstruction after verified crashes. These options remain disabled by default.
 - Add explicit, certificate-bound, one-shot read-only migration for older interrupted Desktop conversations. The original tool call is **never** replayed; operators must independently verify the original transcript and side effects before enabling this path.
-- Include automated hard-kill, tmux and recovery regression tests. This unreleased source snapshot does not promise exactly-once execution or production-safe migration of arbitrary legacy sessions.
+- Include automated hard-kill, tmux and recovery regression tests. This release does not promise exactly-once execution or production-safe migration of arbitrary legacy sessions.
 
 ## 0.1.1 — long-running MCP tools
 
