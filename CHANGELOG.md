@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — automatic first connection
+
+- Add automatic dependency preparation, dedicated profile creation and official interactive Claude subscription login, followed by exact-profile login verification and runtime readiness checking.
+- Open a native setup terminal; prepare Homebrew/tmux on macOS or tmux through supported Linux package managers. Preserve interactive OS permission prompts and provide a headless command fallback.
+- Keep existing-profile sign-in and stored accounts compatible. Use official CLI model aliases without claiming account entitlement discovery.
+- Add hermetic setup, cancellation and actual packaged-runtime tests; retain operator-controlled real OAuth verification.
+
 ## 0.1.2 — native TUI tool-wait timeout fix
 
 - Fix a native interactive TUI bug that mistakenly applied the five-minute one-shot tool-result wait limit to long client `Bash`/`Write` calls. In affected turns, the callback was destroyed after five minutes and Desktop retries returned HTTP 409.

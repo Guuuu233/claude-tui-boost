@@ -9,7 +9,7 @@
 //   * Spawns `<runtime> --serve --port-file <state>/port --key-file <state>/key
 //     --models-file <state>/models.json --state-dir <state> <runtime-args…>`
 //     as an explicit argv — never a shell string — with a scrubbed
-//     environment (no ANTHROPIC_*/proxy/credential variables).
+//     environment (no ANTHROPIC_* or credential overrides; explicit proxy settings are preserved).
 //   * <state-dir> ownership is proven by a .managed-owner marker bound to the
 //     managed key (or to the runtime+path when none). A previously owned dir
 //     resumes — persistent key and checkpoints are kept; a foreign or
@@ -189,9 +189,9 @@ for (const f of [portFile, modelsFile]) {
 }
 
 // Scrubbed child env: the runtime authenticates through its own key file;
-// inherited user credentials or proxies are never passed down.
+// inherited API credentials are removed; configured proxy/certificate settings are preserved.
 const env = {};
-for (const keep of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "USERPROFILE", "CLAUDE_CONFIG_DIR"]) {
+for (const keep of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "USERPROFILE", "CLAUDE_CONFIG_DIR", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"]) {
   if (process.env[keep] !== undefined) env[keep] = process.env[keep];
 }
 if (process.env.MANAGED_RUNTIME_EXTRA_ENV) {

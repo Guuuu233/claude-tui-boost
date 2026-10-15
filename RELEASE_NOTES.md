@@ -1,13 +1,13 @@
-## v0.1.2 — interactive tool waits and guarded recovery
+## v0.2.0 — automatic installation and Claude login
 
-Includes the native recovery changes and timeout fix previously available only on main (through commit 162249649af1514aa02a9f62c2769566bc8ba7c8).
+Install from Magpie Discover, then choose **自动安装并登录 Claude（推荐）** in the Claude TUI provider connection. With official Claude Code v2.1.268+ already installed, the wizard opens a terminal, prepares tmux, creates a private Claude profile, launches official browser login and verifies both subscription login and runtime readiness. No profile paths, ports or connection keys need to be entered.
 
-- Fix the native interactive tool-result wait accidentally using the five-minute one-shot limit: interactive waits now have a 90-minute bound; ordinary one-shot calls retain five minutes.
-- Raise the active interactive native process watchdog to 12 hours. The generated MCP server retains its separate 30-minute timeout; other client and transport limits still apply.
-- Add checksummed tool evidence, cross-process file leases, tmux owner checks, first-turn dirty anchors and guarded tool-free crash reconstruction. Recovery options remain opt-in.
-- Add certificate-bound, one-shot read-only migration for verified legacy interrupted threads. Original tool calls are never replayed. No private session transcripts or operator recovery certificates are included.
-- Build eight runtime/helper binaries for macOS and Linux (arm64/amd64) from published sources in GitHub Actions, with SHA256SUMS.
+- macOS: prepares Homebrew when missing through its official interactive installer, then tmux. OS confirmation/password prompts remain interactive.
+- Linux desktop: prepares tmux through apt-get, dnf or pacman and opens a supported terminal. Headless/SSH users receive an exact command to run on the server.
+- Use Ctrl+C in the setup terminal to cancel. The inspected host does not forward GUI sign-in cancellation to plugin callbacks. Setup is bounded to nine minutes.
+- Existing manually connected accounts remain compatible. Official CLI model aliases are routing choices, not verified account entitlements. No inference request is sent during setup.
+- Retains all v0.1.2 recovery protections and timeout fixes.
 
-This release does not revive already terminated callbacks or guarantee that all HTTP 409/502 failures are resolved. Check existing file and command effects before retrying interrupted work. Cross-host bit-identical builds remain unverified (issue #2); the release checksum manifest identifies these specific downloads.
+Validation uses isolated fake Claude/installer commands, the actual bundled Runtime and inspected Magpie host RPC. Real-account OAuth, real Terminal permission prompts and each Linux desktop have not been fully exercised. See [first-connect instructions](https://github.com/Guuuu233/magpie-claude-tui-plugin/blob/main/FIRST_CONNECT.md).
 
 **Security and policy:** This is third-party, unreviewed software, not supported by Magpie or Anthropic. It runs an authenticated Claude Code TUI, can modify Claude trust and hooks, and may enable bypass-permissions in its working directory. Subscription account/terms risks remain. See the [security documentation](https://github.com/Guuuu233/magpie-claude-tui-plugin#exact-security-and-configuration-effects).

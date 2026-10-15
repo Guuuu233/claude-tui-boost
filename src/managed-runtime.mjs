@@ -5,34 +5,20 @@
 // load safely with NO config side effects; the owned runtime only starts
 // lazily inside account-scoped hooks after the user signs in.
 //
-// Sign-in flow (documented magpie OAuth contract):
-//   methods[0].prompts — collected by the GUI before authorize:
-//       profileDir  absolute path of the dedicated native Claude config dir
-//                   (selected profile is read by Claude only after opt-in;
-//                   never modified by this plugin)
-//       models      comma-separated real model ids the runtime should serve
-//   authorize(inputs) — validates inputs, runs actionable dependency probes,
-//       and returns an auto OAuth flow. Its callback returns an opaque
-//       success key/metadata; magpie stores that callback key as API auth.
-//       The callback does not perform or verify a Claude login. The opaque
-//       key carries profile, models, state path and managed secret; the actual
-//       runtime connection key is never handed to the GUI or logged.
-//   loader(getAuth) / provider.models / fetch — the single lazy startup per
-//       account, behind an in-process lock. Each account owns one supervised
-//       runtime under its own 0700 state dir with a persistent 0600 key and
-//       checkpoints; a hot host reload must not double-start or corrupt it.
-//
-// Boundaries: win32 is unsupported (WSL is required — the runtime drives
-// tmux/Linux PTY; explain, never pretend); no postinstall, no launchagents,
-// no global installs, no guessed pid kills, no auth-status probing.
+// Automatic sign-in owns a fresh private profile, prepares tmux in a visible
+// terminal, runs official Claude auth login and verifies auth status. The
+// advanced method retains explicit already-signed-in profile/model selection.
+// Both return the host's OAuth auto contract with an opaque local account key.
+// Native Windows is unsupported. There is no postinstall or global service.
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHooks, PROVIDER_ID, _internal } from "./index.mjs";
+import { beginFirstConnect, findExecutable, setupEnvironment } from "./first-connect.mjs";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SUPERVISOR = join(packageRoot, "scripts", "managed-runtime-supervisor.mjs");
@@ -125,16 +111,12 @@ function profileRoutesLoopback(profile, env) {
 }
 
 // ---------- dependency probes (actionable, no installs, no spawning) ----------
-function probeDeps() {
-  const found = cmd => {
-    const r = spawnSync(process.platform === "win32" ? "where" : "command", ["-v", cmd], { encoding: "utf8", shell: true, timeout: 8000 });
-    const path = (r.stdout || "").trim().split("\n")[0];
-    return r.status === 0 && path ? path : null;
-  };
+async function probeDeps(env = process.env) {
+  const clean = setupEnvironment(env, realpathSync(env.HOME || homedir()));
   return {
-    bun: found("bun") ?? (process.versions?.bun ? process.execPath : null), // a plugin host Bun is itself a usable runtime
-    tmux: found("tmux"),     // runtime drives Claude's interactive TUI in tmux
-    claude: found("claude"), // the native CLI the selected profile signs into
+    bun: await findExecutable("bun", clean) ?? (process.versions?.bun ? process.execPath : null),
+    tmux: await findExecutable("tmux", clean),
+    claude: await findExecutable("claude", clean),
   };
 }
 const missingDeps = d => Object.entries(d).filter(([, v]) => !v).map(([k]) => k);
@@ -188,7 +170,8 @@ const accounts = new Map(); // key -> Promise<owned>
 
 export function createManagedHooks({
   input = {},
-  deps = probeDeps,
+  deps,
+  onboarding = beginFirstConnect, // hermetic terminal/login test seam
   spawnRuntime,           // test seam: (argv, opts) => child process
   runtimeEntry: entryOf,  // test seam: () => runtime entry path
   transport,              // test seam: forwarded to createHooks fetch
@@ -205,19 +188,10 @@ export function createManagedHooks({
     ? join(input.directory, "magpie-claude-tui")
     : join(env.XDG_CONFIG_HOME || join(home, ".config"), "magpie-claude-tui");
   const launch = spawnRuntime ?? ((argv, opts) => spawn(process.execPath, argv, opts));
+  const dependencyProbe = deps ?? (() => probeDeps(env));
   const loaderCache = new Map(); // storedKey -> built loader options
 
-  const safeChildEnv = profile => {
-    const clean = {};
-    for (const name of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "USERPROFILE"]) {
-      if (env[name] !== undefined) clean[name] = env[name];
-    }
-    const hostDir = dirname(process.execPath);
-    const pathParts = (clean.PATH ?? "").split(delimiter).filter(Boolean);
-    if (process.versions?.bun && !pathParts.includes(hostDir)) clean.PATH = [hostDir, ...pathParts].join(delimiter);
-    clean.CLAUDE_CONFIG_DIR = profile;
-    return clean;
-  };
+  const safeChildEnv = profile => ({ ...setupEnvironment(env, home), CLAUDE_CONFIG_DIR: profile });
 
   const waitForExit = (child, ms) => new Promise(resolveExit => {
     if (child.exitCode !== null || child.signalCode !== null) return resolveExit(true);
@@ -236,7 +210,7 @@ export function createManagedHooks({
   }
 
   async function startAccount(spec) {
-    if (profileDir(spec.profile, home) !== spec.profile || profileRoutesLoopback(spec.profile, env)) {
+    if (profileDir(spec.profile, home) !== spec.profile || profileRoutesLoopback(spec.profile, safeChildEnv(spec.profile))) {
       throw new Error("Selected Claude profile is no longer safe for managed startup; choose a real dedicated profile without loopback Anthropic routing.");
     }
     const entry = entryOf ? entryOf() : runtimeEntry();
@@ -371,6 +345,37 @@ export function createManagedHooks({
       provider: PROVIDER_ID,
       methods: [{
         type: "oauth",
+        label: "自动安装并登录 Claude（推荐）",
+        async authorize() {
+          const session = await onboarding({ home, stateRoot, env });
+          return {
+            url: "",
+            method: "auto",
+            instructions: session.opened
+              ? "已打开安装终端：自动准备 tmux 并启动官方 Claude 登录。请在浏览器完成授权；如需授权码，请粘贴到终端。Ctrl+C 可取消。"
+              : `未能自动打开终端。请在运行 Magpie 的同一台电脑上执行下列命令完成安装和登录：\n${session.command}`,
+            async callback() {
+              try {
+                const prepared = await session.finish();
+                const profile = profileDir(prepared.profile, home);
+                if (profileRoutesLoopback(profile, {})) throw new Error("专用配置不能指向本地反向代理。");
+                const missing = missingDeps(await dependencyProbe());
+                if (missing.length) throw new Error(depsHint(missing));
+                const spec = { v: 1, profile, models: modelList(prepared.models.join(",")), managed: hex(24) };
+                spec.state = join(stateRoot, "accounts", sha(spec.managed).slice(0, 16), "state");
+                const key = encodeKey(spec);
+                // Verify the bundled runtime handshake before saving a successful account.
+                accounts.set(key, startAccount(spec).catch(error => { accounts.delete(key); throw error; }));
+                await accounts.get(key);
+                return { type: "success", key, metadata: { accountId: profile } };
+              } catch (error) {
+                return { type: "failed", error: error.message };
+              }
+            },
+          };
+        },
+      }, {
+        type: "oauth",
         label: "连接已登录 Claude",
         prompts: [
           { type: "text", key: "profileDir",
@@ -395,7 +400,7 @@ export function createManagedHooks({
             state: null,           // filled below
           };
           spec.state = join(stateRoot, "accounts", sha(spec.managed).slice(0, 16), "state");
-          const missing = missingDeps(await deps());
+          const missing = missingDeps(await dependencyProbe());
           if (missing.length) throw new Error(depsHint(missing));
           // The GUI saves the opaque callback key as API auth. The callback
           // only connects the host to the selected local profile; it performs

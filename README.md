@@ -8,8 +8,7 @@ This provider uses a locally installed, already signed-in Claude Code **interact
 
 ## Installation (from GitHub, not the community registry)
 
-Requirements: Magpie with GitHub plugin installation support; a user-controlled **dedicated** Claude configuration directory under your home, signed in with the real Claude Code; Bun, tmux and `claude` on `PATH`; macOS or Linux (arm64 / x86_64). Native Windows is unsupported; WSL2 with Linux may work. Ensure your client and the Magpie plugin/runtime run on the **same machine** as Claude Code; a remote VPS runs its own copy of this plugin.
-
+Requirements: Magpie with GitHub plugin installation support, official Claude Code **v2.1.268 or newer** installed, and macOS or Linux (arm64 / x86_64). Bun is supplied by the Magpie plugin host. The automatic connection flow prepares tmux and a dedicated Claude profile; native Windows is unsupported. The plugin/runtime and Claude Code must run on the same machine; installing on a Mac does not update a VPS.
 ```sh
 magpie plugin add github:Guuuu233/magpie-claude-tui-plugin
 magpie plugin login claude-tui
@@ -17,12 +16,21 @@ magpie plugin login claude-tui
 
 Alternatively, find **magpie-claude-tui-plugin** under **Plugins → Discover → Unofficial** (GitHub repositories tagged `magpie-plugin`). This GitHub discovery entry does **not** mean the Magpie project reviewed it. The package is not published in the `@magpie-community` npm organization.
 
-In the sign-in form, supply the absolute path to your dedicated Claude config directory and comma-separated actual model IDs available to your Claude Code account. For example, a model ID can be `claude-opus-5-5` *only if* your installed Claude Code supports it. The plugin stores an opaque local managed-runtime credential in Magpie's plugin auth state; keep that state private.
+After installation, open the **Claude TUI** provider connection and choose **自动安装并登录 Claude（推荐）**:
+
+1. A visible terminal opens and prepares tmux. On macOS, missing Homebrew is installed through its official interactive installer; on Linux, supported package managers are apt-get, dnf and pacman. System password/installer confirmation prompts remain interactive.
+2. Official `claude auth login --claudeai` opens the browser. Complete authorization there; paste a code into the terminal only if the official CLI asks for one.
+3. The plugin checks subscription login in its newly created private profile, starts the bundled runtime and verifies its readiness before saving the local connection.
+
+No profile paths, ports or connection keys need to be entered. Models use official CLI aliases `sonnet`, `opus` and `haiku`; these are routing choices, **not** a discovered list of account entitlements. Claude enforces model access. The setup does not send a paid inference request.
+
+The existing **连接已登录 Claude** method remains available for advanced users: supply a dedicated profile directory and actual model IDs yourself. Existing stored accounts remain compatible. See [首次连接说明（中文）](FIRST_CONNECT.md) for permission prompts, cancellation and headless Linux. Keep Magpie's local auth state private.
 
 ## Exact security and configuration effects
 
-**Read this before installing.** Installing from GitHub runs **third-party code** under your Magpie process account. The managed runtime starts automatically when a signed-in provider first processes a request and uses a local loopback listener, a private key file and a per-account state directory. There is **no npm postinstall script**, but its runtime actively starts processes and writes configuration:
+**Read this before installing.** Installing from GitHub runs **third-party code** under your Magpie process account. The automatic flow starts the managed runtime after verified login; the advanced flow starts it on the first request and uses a local loopback listener, a private key file and a per-account state directory. There is **no npm postinstall script**, but its runtime actively starts processes and writes configuration:
 
+- The automatic connection action may install Homebrew/tmux using the system package manager, opens a terminal, and creates a fresh private Claude profile under plugin-owned state. Claude performs OAuth and stores its credentials there; the plugin never copies the main profile. No dependency installer runs just from loading/installing the plugin.
 - Its vendored `claude-bridge-magpie/src/preaccept.ts` **writes the selected Claude config directory's `.claude.json`**, pre-accepting project trust and MCP approvals for the runtime's work directory. It makes a `.claude-bridge-backup` on the first modification.
 - Its vendored `hook-install.ts` **installs runtime hooks** in `.claude/settings.local.json` inside the generated work directory in the managed user-context path. Other CLI paths may write Claude's global `~/.claude/settings.json`. Inspect your actual environment before enabling them.
 - The wrapper enables `bypassPermissions` and `skipDangerousModePermissionPrompt` in the runtime work directory for non-root sessions, and can **automatically accept startup dialogs and send keystrokes in tmux**. A Claude TUI started this way can run without its normal interactive confirmation prompts. **Do not select your main Claude profile; use a dedicated, isolated profile and machine account.**

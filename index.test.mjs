@@ -7,7 +7,7 @@ describe("Claude TUI independent entry", () => {
 
     expect(hooks.auth.provider).toBe("claude-tui")
     expect(typeof hooks.auth.loader).toBe("function")
-    expect(hooks.auth.methods).toHaveLength(1)
+    expect(hooks.auth.methods).toHaveLength(2)
     expect(hooks.auth.methods[0].type).toBe("oauth")
     expect(typeof hooks.auth.methods[0].authorize).toBe("function")
 
