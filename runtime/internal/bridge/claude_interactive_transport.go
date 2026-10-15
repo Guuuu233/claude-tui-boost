@@ -1398,7 +1398,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	for _, tool := range interactiveTools(req, len(images) > 0) {
 		run.tools[tool.Name] = true
 	}
-	run.timer = time.AfterFunc(30*time.Minute, run.abort)
+	run.timer = time.AfterFunc(interactiveActiveLongest, run.abort)
 	segment := run.attach()
 	b.mu.Lock()
 	b.runs[token] = run

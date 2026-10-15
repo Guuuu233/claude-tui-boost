@@ -121,6 +121,26 @@ const (
 // run started with the whole conversation, as its next turn would be.
 var parkLongest = 5 * time.Minute
 
+// An interactive Claude TUI keeps one native process across many MCP
+// handoffs. A long-running client tool (large build, model fitting, etc.)
+// must not inherit parkLongest from one-shot -p sessions: after that timer
+// fires, the native callback is destroyed and Desktop's eventual result
+// becomes an unrecoverable 409. This bounds abandoned PTYs without killing
+// legitimate external work after five minutes.
+const interactiveParkLongest = 90 * time.Minute
+
+// Native interactive work can span many uninterrupted tool rounds; the
+// wrapper also has a finite 12-hour process lifetime. The short 30-minute
+// initial timer was an independent source of orphaned tool callbacks.
+const interactiveActiveLongest = 12 * time.Hour
+
+func (r *subscriptionRun) parkedToolWaitTimeout() time.Duration {
+	if r.interactive {
+		return interactiveParkLongest
+	}
+	return parkLongest
+}
+
 // A run whose reply called nothing but a tool that ends its caller's turn
 // (finalTools: an Agent SDK or workflow subagent's StructuredOutput, answered
 // by the client itself) hears no result for it when the call was good, the
@@ -1646,8 +1666,14 @@ func (r *subscriptionRun) park() {
 	case final:
 		r.timer.Reset(finalGrace)
 		return
+	case r.interactive:
+		// Interactive sessions have no stdin pipe by design, not because
+		// they are disposable one-shot asks. Keep their parked callbacks
+		// long enough for real client tool execution, but still bounded.
+		r.timer.Reset(r.parkedToolWaitTimeout())
+		return
 	case r.stdin == nil:
-		r.timer.Reset(parkLongest)
+		r.timer.Reset(r.parkedToolWaitTimeout())
 		return
 	}
 	b := r.bridge
@@ -2876,7 +2902,11 @@ func (r *subscriptionRun) offers(tools []Tool) bool {
 // the agent's tools from now on, handed over with the results.
 func (r *subscriptionRun) continueWith(results []Part, tools []bridgeTool) (<-chan Event, error) {
 	if r.timer != nil {
-		r.timer.Reset(30 * time.Minute)
+		if r.interactive {
+			r.timer.Reset(interactiveActiveLongest)
+		} else {
+			r.timer.Reset(30 * time.Minute)
+		}
 	}
 	r.mu.Lock()
 	r.parkedAt = time.Time{}
@@ -3770,7 +3800,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			run.mu.Lock()
 			run.parkedAt = time.Time{}
 			run.mu.Unlock()
-			run.timer.Reset(30 * time.Minute)
+			if run.interactive {
+				run.timer.Reset(interactiveActiveLongest)
+			} else {
+				run.timer.Reset(30 * time.Minute)
+			}
 			events = run.attach()
 			log.Printf("Claude interactive reattached to already-delivered MCP results after client disconnect")
 		} else if run.interactive {

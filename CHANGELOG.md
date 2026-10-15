@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — native TUI tool-wait timeout fix
+
+- Fix a native interactive TUI bug that mistakenly applied the five-minute one-shot tool-result wait limit to long client `Bash`/`Write` calls. In affected turns, the callback was destroyed after five minutes and Desktop retries returned HTTP 409.
+- Use a bounded 90-minute interactive tool wait and a 12-hour active native watchdog, matching the wrapper process cap; preserve the five-minute timeout for ordinary one-shot calls.
+- Does not retroactively recover terminated tool callbacks; always verify previous tool side effects before continuing.
+
 ## Unreleased — guarded native recovery and one-shot legacy migration
 
 - Extend the native wrapper lifetime cap and MCP handoff safety; record checksummed tool evidence and guard interrupted native sessions against unsafe replay.
