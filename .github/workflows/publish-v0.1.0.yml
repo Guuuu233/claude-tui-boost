@@ -7,7 +7,7 @@ on:
         description: 'Semver tag to create (e.g. v0.1.1)'
         required: true
         type: string
-        default: v0.2.0
+        default: v0.2.1
 
 permissions:
   contents: write
@@ -24,6 +24,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
+      - name: Install tmux for isolated SSH-login tests
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Verify plugin and isolated first-connect tests
         run: bun test
       - uses: actions/setup-go@v6

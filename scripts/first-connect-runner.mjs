@@ -24,7 +24,7 @@ export function validSubscriptionStatus(status, profile) {
   return typeof status.configDirectory === 'string' && resolve(status.configDirectory) === resolve(profile);
 }
 
-export async function runSetup(config, { env = process.env, find = findExecutable, run, os = process.platform, say = console.log } = {}) {
+export async function runSetup(config, { env = process.env, find = findExecutable, run, os = process.platform, say = console.log, onPhase = async () => {}, prepareOnly = false } = {}) {
   if (config.v !== 1 || !Number.isFinite(config.deadline) || config.deadline < Date.now()) throw new Error('Setup expired');
   if (config.home !== env.HOME) throw new Error('Setup HOME mismatch');
   await privateDirectory(config.profile, config.home);
@@ -32,6 +32,7 @@ export async function runSetup(config, { env = process.env, find = findExecutabl
   clean.CLAUDE_CONFIG_DIR = config.profile;
   const claude = await find('claude', clean);
   if (!claude) throw new Error('未找到 Claude Code，请先安装后重试。');
+  await onPhase("preparing");
   if (!await find('tmux', clean)) {
     const found = Object.fromEntries(await Promise.all(['brew', 'apt-get', 'dnf', 'pacman', 'sudo'].map(async n => [n, await find(n, clean)])));
     if (os === 'darwin' && !found.brew) {
@@ -49,20 +50,23 @@ export async function runSetup(config, { env = process.env, find = findExecutabl
     await run(bin, args, { env: clean });
     if (!await find('tmux', clean)) throw new Error('tmux 安装未成功，请检查终端中的包管理器输出。');
   }
+  if (prepareOnly) return { prepared: true };
   const status = async () => {
     try { return JSON.parse(await run(claude, ['auth', 'status', '--json'], { env: clean, capture: true })); } catch { return null; }
   };
   say('使用插件专用 Claude 配置目录；不会复制或覆盖已有 Claude 登录。');
   if (!validSubscriptionStatus(await status(), config.profile)) {
     say('正在打开官方 Claude 登录。请完成浏览器授权；如出现授权码提示，请粘贴到此终端。');
+    await onPhase('login');
     await run(claude, ['auth', 'login', '--claudeai'], { env: clean });
   }
+  await onPhase('verifying');
   if (!validSubscriptionStatus(await status(), config.profile)) throw new Error('无法确认专用目录的 Claude 订阅登录。请更新 Claude Code（需支持 auth status 的 configDirectory 字段），并使用 Claude 订阅登录。');
   say('Claude 登录已验证，正在连接 Magpie。可返回 Magpie 查看连接结果。');
   return { v: 1, ok: true, profile: config.profile };
 }
 
-async function main(configPath) {
+export async function readSetupConfig(configPath, env = process.env) {
   const st = await lstat(configPath);
   if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o777) !== 0o600) throw new Error('Setup config is not a private regular file');
   const config = JSON.parse(await readFile(configPath, 'utf8'));
@@ -71,10 +75,17 @@ async function main(configPath) {
   for (const [name, file] of [['profile', 'claude'], ['resultFile', 'result.json'], ['heartbeat', 'heartbeat'], ['cancelFile', 'cancel']]) {
     if (config[name] !== join(session, file)) throw new Error('Setup path mismatch');
   }
+  if (config.home !== env.HOME) throw new Error('Setup HOME mismatch');
+  return config;
+}
+
+async function main(configPath, prepareOnly = false) {
+  const config = await readSetupConfig(configPath);
+  const session = dirname(configPath);
   try { await lstat(config.cancelFile); throw new Error('安装已取消，请重新连接。'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (Date.now() - (await stat(config.heartbeat)).mtimeMs > 12000) throw new Error('Magpie 安装会话已结束，请重新连接。');
   // A late-opened terminal and the manual fallback must never start two logins.
-  await mkdir(join(session, 'running'), { mode: 0o700 });
+  if (!prepareOnly) await mkdir(join(session, 'running'), { mode: 0o700 });
   const controller = new AbortController();
   const stop = () => controller.abort();
   process.once('SIGINT', stop); process.once('SIGTERM', stop); process.once('SIGHUP', stop);
@@ -100,9 +111,16 @@ async function main(configPath) {
     child.once('close', code => { cleanup(); code === 0 ? res(output) : rej(new Error(controller.signal.aborted ? '安装或登录已取消。' : '安装或 Claude 登录失败，请查看终端输出后重新连接。')); });
   });
   let result;
-  try { result = await runSetup(config, { run, env: config.environment }); }
+  try { result = await runSetup(config, { run, env: config.environment, prepareOnly,
+    onPhase: async phase => {
+      const tmp = join(session, 'progress.tmp');
+      await writeFile(tmp, JSON.stringify({ phase, updatedAt: Date.now() }), { mode: 0o600 });
+      await rename(tmp, join(session, 'progress.json'));
+    },
+  }); }
   catch (e) { result = { v: 1, ok: false, profile: config.profile, error: e.message }; console.error(e.message); }
   finally { clearInterval(timer); }
+  if (prepareOnly && result.prepared) return;
   // A fresh setup owns this result; publish atomically and never serialize auth status or OAuth tokens.
   const tmp = join(session, 'result.tmp');
   await writeFile(tmp, JSON.stringify(result), { mode: 0o600, flag: 'wx' });
@@ -110,5 +128,5 @@ async function main(configPath) {
   if (!result.ok) process.exitCode = 1;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main(process.argv[2]).catch(e => { console.error(e.message); process.exitCode = 1; });
+  main(process.argv[2], process.argv[3] === '--prepare-only').catch(e => { console.error(e.message); process.exitCode = 1; });
 }

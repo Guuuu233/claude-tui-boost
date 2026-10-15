@@ -92,9 +92,11 @@ export async function beginFirstConnect({ home, stateRoot, env, terminal = launc
   // The launched terminal inherits the user's shell; scrub its environment
   // again with env -i. Proxy/certificate values stay in the private config,
   // never in terminal command text or process argv.
-  const command = ['/usr/bin/env', '-i', `HOME=${home}`, `PATH=${clean.PATH}`, process.execPath, runner, configFile].map(shellQuote).join(' ');
+  const prefix = ['/usr/bin/env', '-i', `HOME=${home}`, `PATH=${clean.PATH}`, process.execPath];
+  let command = [...prefix, runner, configFile].map(shellQuote).join(' ');
   let opened = false;
   try { opened = await terminal(command, clean); } catch { /* Display a manual fallback instead of losing the flow. */ }
+  if (!opened) command = [...prefix, fileURLToPath(new URL('../scripts/ssh-login.mjs', import.meta.url)), configFile, 'start'].map(shellQuote).join(' ');
   let settled = false;
   const pulse = setInterval(() => writeFile(heartbeat, '', { mode: 0o600 }).catch(() => {}), 2000);
   pulse.unref?.();

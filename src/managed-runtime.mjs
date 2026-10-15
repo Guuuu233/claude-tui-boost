@@ -353,7 +353,7 @@ export function createManagedHooks({
             method: "auto",
             instructions: session.opened
               ? "已打开安装终端：自动准备 tmux 并启动官方 Claude 登录。请在浏览器完成授权；如需授权码，请粘贴到终端。Ctrl+C 可取消。"
-              : `未能自动打开终端。请在运行 Magpie 的同一台电脑上执行下列命令完成安装和登录：\n${session.command}`,
+              : `未能自动打开终端。请在运行 Magpie 的服务器上执行下列命令。SSH 登录会话可断线重连；将输出中的 authorizationURL 转交用户在本机浏览器授权，授权码只从标准输入提交：\n${session.command}`,
             async callback() {
               try {
                 const prepared = await session.finish();

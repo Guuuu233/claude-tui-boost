@@ -24,7 +24,7 @@ After installation, open the **Claude TUI** provider connection and choose **自
 
 No profile paths, ports or connection keys need to be entered. Models use official CLI aliases `sonnet`, `opus` and `haiku`; these are routing choices, **not** a discovered list of account entitlements. Claude enforces model access. The setup does not send a paid inference request.
 
-The existing **连接已登录 Claude** method remains available for advanced users: supply a dedicated profile directory and actual model IDs yourself. Existing stored accounts remain compatible. See [首次连接说明（中文）](FIRST_CONNECT.md) for permission prompts, cancellation and headless Linux. Keep Magpie's local auth state private.
+The existing **连接已登录 Claude** method remains available for advanced users: supply a dedicated profile directory and actual model IDs yourself. Existing stored accounts remain compatible. See [首次连接说明（中文）](FIRST_CONNECT.md) for permission prompts, cancellation and headless Linux. For AI-assisted VPS setup, see [AI_REMOTE_SETUP.md](AI_REMOTE_SETUP.md): a private tmux login survives SSH disconnects, reports an official `authorizationURL`, and accepts a returned code only on stdin. Keep Magpie's local auth state private.
 
 ## Exact security and configuration effects
 

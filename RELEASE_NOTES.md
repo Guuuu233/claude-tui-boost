@@ -1,13 +1,15 @@
-## v0.2.0 — automatic installation and Claude login
+## v0.2.1 — smoother AI-assisted SSH/VPS login
 
-Install from Magpie Discover, then choose **自动安装并登录 Claude（推荐）** in the Claude TUI provider connection. With official Claude Code v2.1.268+ already installed, the wizard opens a terminal, prepares tmux, creates a private Claude profile, launches official browser login and verifies both subscription login and runtime readiness. No profile paths, ports or connection keys need to be entered.
+Headless setup now places the Claude login phase in an isolated private tmux/PTY. If the AI SSH terminal disconnects, reconnecting to the same command retrieves the same login instead of starting another one.
 
-- macOS: prepares Homebrew when missing through its official interactive installer, then tmux. OS confirmation/password prompts remain interactive.
-- Linux desktop: prepares tmux through apt-get, dnf or pacman and opens a supported terminal. Headless/SSH users receive an exact command to run on the server.
-- Use Ctrl+C in the setup terminal to cancel. The inspected host does not forward GUI sign-in cancellation to plugin callbacks. Setup is bounded to nine minutes.
-- Existing manually connected accounts remain compatible. Official CLI model aliases are routing choices, not verified account entitlements. No inference request is sent during setup.
-- Retains all v0.1.2 recovery protections and timeout fixes.
+- Structured status reports an official `authorizationURL` for the user to open on their own computer; supports current and legacy official login routes and rejects localhost callback links.
+- Returned authorization codes are accepted on stdin, never as arguments. Duplicate submissions and expired sessions are refused.
+- Printed control commands provide status, attach, cancel and code submission. `start-detached` supports tools that cannot hold an SSH command open.
+- Independent ownership checks keep different login sessions apart. A bounded watcher cleans only the owned tmux server. Unexpected login process exits fail the pending sign-in.
+- Retains the dedicated-profile login and runtime-readiness checks from v0.2.0. `authenticated` is explicitly distinct from Magpie's completed connection.
 
-Validation uses isolated fake Claude/installer commands, the actual bundled Runtime and inspected Magpie host RPC. Real-account OAuth, real Terminal permission prompts and each Linux desktop have not been fully exercised. See [first-connect instructions](https://github.com/Guuuu233/magpie-claude-tui-plugin/blob/main/FIRST_CONNECT.md).
+Dependency installation may still need an interactive `ssh -tt` session for system permission prompts. A Magpie host restart or the existing nine-minute deadline ends the pending login. No new public callback ports are opened.
+
+Validation uses real private tmux sessions and fake Claude/authorization codes, plus inspected host RPC and bundled runtime checks. Actual VPS/browser OAuth has not been exercised in this change. See [AI remote setup guide](https://github.com/Guuuu233/magpie-claude-tui-plugin/blob/main/AI_REMOTE_SETUP.md).
 
 **Security and policy:** This is third-party, unreviewed software, not supported by Magpie or Anthropic. It runs an authenticated Claude Code TUI, can modify Claude trust and hooks, and may enable bypass-permissions in its working directory. Subscription account/terms risks remain. See the [security documentation](https://github.com/Guuuu233/magpie-claude-tui-plugin#exact-security-and-configuration-effects).

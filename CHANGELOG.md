@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 — resilient SSH login
+
+- Run the headless login phase in a private tmux/PTY, with detached cleanup and resumable status after SSH disconnect. Reconnecting never starts a duplicate login.
+- Emit restricted official authorization URLs and structured phases; support stdin-only authorization-code submission, attach and cancellation. Never forward localhost callbacks as login URLs.
+- Reject code replay, expired sessions and foreign tmux owners; distinguish authenticated Claude from a connected Magpie runtime. Surface crashed helpers as failed sign-ins.
+- Add real-private-tmux tests with fake Claude and an AI remote-setup guide; keep current local connection and stored accounts compatible.
+
 ## 0.2.0 — automatic first connection
 
 - Add automatic dependency preparation, dedicated profile creation and official interactive Claude subscription login, followed by exact-profile login verification and runtime readiness checking.

@@ -1,6 +1,6 @@
 {
   "name": "magpie-claude-tui-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Unofficial self-hosted Claude Code TUI provider for Magpie/OpenCode (independent, unreviewed third-party plugin)",
   "type": "module",
   "main": "./index.mjs",
@@ -15,7 +15,8 @@
     "README.md",
     "COMPATIBILITY.md",
     "LICENSE",
-    "FIRST_CONNECT.md"
+    "FIRST_CONNECT.md",
+    "AI_REMOTE_SETUP.md"
   ],
   "bin": {
     "magpie-tui-check-deps": "./scripts/check-deps.mjs",
