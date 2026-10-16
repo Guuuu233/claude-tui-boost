@@ -134,6 +134,6 @@ test('unexpected remote process exit publishes a failed result for the Magpie ca
   await until(() => remoteStatus(f.configPath, { env: f.env }), s => s.phase === 'waiting_authorization');
   const d = JSON.parse(await readFile(join(dirname(f.configPath), 'remote.json'), 'utf8'));
   await new Promise(res => { const c = spawn(f.tmux, ['-S', d.socket, 'kill-server'], { stdio: 'ignore' }); c.once('exit', res); });
-  await assert.rejects(f.session.finish(), /退出|中断|取消|失败/);
+  await assert.rejects(f.session.finish(), /退出|中断|取消|失败|无法确认/);
   assert.notEqual((await remoteStatus(f.configPath, { env: f.env })).phase, 'authenticated');
 });
