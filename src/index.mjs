@@ -106,6 +106,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
         return usageReader({
           profileDir: usageProfileDir,
           env: configuration.usageEnv ?? process.env,
+          usageMode: configuration.usageMode ?? 'native',
         });
       },
       async loader(getAuth) {

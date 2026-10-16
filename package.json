@@ -1,6 +1,6 @@
 {
   "name": "magpie-claude-tui-plugin",
-  "version": "0.2.6",
+  "version": "0.2.7-rc.1",
   "description": "Unofficial self-hosted Claude Code TUI provider for Magpie/OpenCode (independent, unreviewed third-party plugin)",
   "type": "module",
   "main": "./index.mjs",
@@ -19,15 +19,20 @@
     "AI_REMOTE_SETUP.md",
     "RECOVERY.md",
     "CHANGELOG.md",
-    "HOST_COMPATIBILITY.md"
+    "HOST_COMPATIBILITY.md",
+    "RELEASE_NOTES.md",
+    "SHA256SUMS"
   ],
   "bin": {
     "magpie-tui-check-deps": "./scripts/check-deps.mjs",
+    "magpie-tui-doctor": "./scripts/magpie-tui-doctor.mjs",
     "magpie-tui-runtime-setup": "./scripts/magpie-tui-runtime-setup.mjs",
     "magpie-tui-bridge": "./bin/magpie-tui-bridge"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "verify:package": "node scripts/verify-package-assets.mjs",
+    "prepack": "node scripts/verify-package-assets.mjs"
   },
   "dependencies": {
     "zod": "4.4.3"

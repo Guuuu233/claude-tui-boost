@@ -28,7 +28,7 @@ test("refuses output without a readable quota instead of inventing zero usage", 
     .toThrow(/signed in/i);
 });
 
-test("reads quota windows from the selected profile without sending prompt data", async () => {
+test("explicit direct quota mode reads selected profile without sending prompt data", async () => {
   const home = mkdtempSync(join(tmpdir(), "magpie-usage-api-test-"));
   const profile = join(home, "profile");
   mkdirSync(profile);
@@ -56,6 +56,7 @@ test("reads quota windows from the selected profile without sending prompt data"
   try {
     const options = {
       profileDir: profile,
+      usageMode: "direct",
       env: { HOME: home, PATH: "" },
       fetchImpl,
       spawnProcess: () => { throw new Error("Claude CLI should not run when OAuth credentials are available"); },
@@ -95,6 +96,7 @@ test("does not expose OAuth credentials when the official usage endpoint refuses
   try {
     const result = await readClaudeUsage({
       profileDir: profile,
+      usageMode: "direct",
       env: { HOME: home, PATH: "" },
       fetchImpl: async () => ({
         ok: false,

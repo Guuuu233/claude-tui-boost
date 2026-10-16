@@ -286,11 +286,17 @@ async function readUsageFromEndpoint(accessToken, { fetchImpl = globalThis.fetch
   return { windows: apiUsageWindows(payload) };
 }
 
-async function readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl }) {
-  const token = await readProfileAccessToken(profileDir);
-  if (token) return readUsageFromEndpoint(token, { fetchImpl, timeoutMs });
+async function readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode }) {
+  if (usageMode === 'direct') {
+    const token = await readProfileAccessToken(profileDir);
+    if (!token) throw new Error('Explicit direct quota mode requires a readable profile OAuth token');
+    return readUsageFromEndpoint(token, { fetchImpl, timeoutMs });
+  }
+  if (usageMode !== 'native') throw new Error('Unknown Claude usage mode');
 
-  // macOS Keychain-backed profiles may not expose OAuth credentials in this file.
+  // Default to the official Claude Code /usage behavior on every platform.
+  // Merely having an OAuth token in the profile is not authorization for
+  // this plugin to issue its own direct usage requests.
   const home = env.HOME || homedir();
   const cliEnv = setupEnvironment(env, home);
   let executable = command;
@@ -306,11 +312,14 @@ export async function readClaudeUsage({
   spawnProcess,
   timeoutMs,
   fetchImpl,
+  usageMode = 'native',
 } = {}) {
   if (typeof profileDir !== "string" || !isAbsolute(profileDir)) {
     return { windows: [], error: "Claude profile directory must be an absolute path" };
   }
-  const key = resolve(profileDir);
+  // Different transports are not interchangeable caches: one may be stale
+  // or unavailable while the other has an independently sourced reading.
+  const key = resolve(profileDir) + '\0' + usageMode;
   const cached = usageCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     return { windows: cached.windows.map(window => ({ ...window })) };
@@ -326,7 +335,7 @@ export async function readClaudeUsage({
     }
   }
 
-  const request = readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl })
+  const request = readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode })
     .then(value => {
       const safeValue = { windows: value.windows.map(window => ({ ...window })) };
       usageCache.set(key, { expiresAt: Date.now() + usageCacheTtlMs, windows: safeValue.windows });

@@ -1,5 +1,11 @@
 # Magpie host compatibility
 
+## Local candidate v0.2.7-rc.1
+
+This repository also tests against the exact upstream `v0.1.1268` commit `63be47717a9ca91fc89102078a1f1fff3e03e0ce`. The bundled runtime and helper are built from the plugin's own `runtime/` source, not from a private Magpie fork.
+
+Magpie v0.1.1268 has a known host-wide hook collision when multiple plugins declare `claude-tui`. Plugin-only mitigation is **fail closed**, not secretly patching Magpie. With exactly one enabled adapter, the plugin's account-key-bound session proof is accepted. Use `magpie-tui-doctor --plugins /path/to/plugins.json --runtime-dir /path/to/runtime-state --service-uid <UID>` for explicitly managed external runtime instances. With plugin-managed per-account runtimes, keep one enabled adapter and use the packaged runtime's own readiness checks. The doctor reads only local metadata; it never rewrites the host config.
+
 The runtime, MCP helper and adapted wrapper ship inside this plugin. Updating Magpie does not rebuild them or turn this provider into Magpie's built-in Claude provider. It can still change the surrounding contract: module loading, sign-in, account/model discovery, gateway API translation, stable conversation ids, hook headers, streaming, cancellation and proxy/process handling.
 
 ## Verified boundary

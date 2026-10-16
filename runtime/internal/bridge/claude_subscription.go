@@ -1534,23 +1534,48 @@ type controlReply struct {
 // for the turn, one with a tool call in the client's hands, one whose
 // Claude Code refuses or doesn't answer — is ended, as before.
 func (r *subscriptionRun) letGo() {
+	r.letGoFor(nil)
+}
+
+// A cancelled HTTP stream is only permitted to detach the event channel it
+// owned. A delayed cancellation must not end a newer MCP continuation.
+// Keeping the original native callback means the already-running client
+// tool never needs to be executed again.
+func (r *subscriptionRun) letGoFor(segment <-chan Event) {
 	// A disconnected client may still be executing a tool we already handed
 	// it. Keep the same MCP run for its result; restarting it would orphan
 	// that result and risk replaying a side-effecting tool.
 	r.mu.Lock()
-	waitingForClientTool := r.interactive && !r.closed && len(r.shown) > 0
-	r.mu.Unlock()
-	if waitingForClientTool {
-		r.mu.Lock()
-		r.abandonedByClient = true
+	if segment != nil && (<-chan Event)(r.segment) != segment {
 		r.mu.Unlock()
-		r.endSegment()
-		r.park()
-		r.timer.Reset(30 * time.Minute)
+		return
+	}
+	waitingForClientTool := r.interactive && !r.closed && (len(r.shown) > 0 || len(r.pending) > 0)
+	if waitingForClientTool {
+		if r.segment == nil {
+			r.mu.Unlock()
+			return // this exact stream was already detached
+		}
+		ch := r.segment
+		r.segment = nil
+		r.parkedAt = time.Now()
+		r.abandonedByClient = true
+		final := len(r.asked) > 0
+		for _, name := range r.asked {
+			final = final && finalTools[name]
+		}
+		if r.timer != nil {
+			if final {
+				r.timer.Reset(finalGrace)
+			} else {
+				r.timer.Reset(r.parkedToolWaitTimeout())
+			}
+		}
+		r.mu.Unlock()
+		r.closeSegment(ch)
 		log.Printf("Claude interactive client disconnected during MCP tool handoff; keeping run for tool results")
 		return
 	}
-	r.mu.Lock()
 	turn, back := r.turnUUID, r.backKey
 	can := !r.closed && r.stdin != nil && r.bridge != nil && r.timer != nil &&
 		turn != "" && back != "" && len(r.pending) == 0 && r.rewinding == nil
@@ -1690,7 +1715,7 @@ func (r *subscriptionRun) park() {
 		run.mu.Lock()
 		at, closed := run.parkedAt, run.closed
 		run.mu.Unlock()
-		if !closed && !at.IsZero() && now.Sub(at) >= parkLongest {
+		if !closed && !at.IsZero() && now.Sub(at) >= run.parkedToolWaitTimeout() {
 			parked = append(parked, waiting{run, at})
 		}
 	}
@@ -4001,7 +4026,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	gone := context.AfterFunc(r.Context(), func() {
 		letting.Store(true)
 		log.Printf("%s run on %s stopped: the client went away %s into the reply", name, model, time.Since(began).Round(time.Millisecond))
-		run.letGo()
+		run.letGoFor(events)
 	})
 	defer gone()
 	abort := func() {

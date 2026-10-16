@@ -1,3 +1,11 @@
+## 0.2.7-rc.1 — standalone packaging of reliability fixes (unreleased)
+
+- Bundle the callback-disconnect fencing fix in the **plugin's own** Go Runtime: late or repeated client cancellation no longer detaches a newer client stream; preserve existing 90-minute interactive tool wait and never replay an external tool.
+- Default to native Claude Code `/usage`, with direct OAuth usage an explicit opt-in and isolated caches.
+- Ship the `magpie-tui-doctor` read-only deployment checker as part of the plugin package, catching duplicate adapters, stale runtime ports, incorrect file ownership and permissions, and symlinks.
+- Build all platform binaries from the plugin's included Runtime source and validate the `SHA256SUMS` manifest during `npm pack`.
+- Add host-compatibility checks for Magpie v0.1.1268, and document that same-provider hook collisions cannot be eliminated solely within a third-party plugin.
+
 # Changelog
 
 ## 0.2.6 — accurate Claude quota windows
