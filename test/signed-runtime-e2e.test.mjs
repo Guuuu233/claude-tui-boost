@@ -26,15 +26,22 @@ let stderr = '';
 try {
   const home = join(dir, 'home');
   const state = join(dir, 'state');
+  const bin = join(dir, 'bin');
   mkdirSync(home, { mode: 0o700 });
   mkdirSync(state, { mode: 0o700 });
+  mkdirSync(bin, { mode: 0o700 });
+  // The Runtime checks for an installed Claude CLI before dispatching to
+  // our synthetic bridge. Mac workstations already have one, but Linux CI
+  // must remain standalone and MUST NOT run genuine Claude or authenticate.
+  const claude = join(bin, 'claude');
+  writeFileSync(claude, '#!/bin/sh\nif [ "${1:-}" = "--version" ]; then echo "2.1.296 (offline Claude Code test stub)"; exit 0; fi\necho "refusing real Claude calls" >&2\nexit 93\n', {mode:0o700});
   const bridge = join(dir, 'fake-claude-bridge.sh');
   writeFileSync(bridge, `#!/bin/sh\n# Synthetic transcript only; no Claude Code or network invocation.\ncat >/dev/null\nprintf '%s\\n' '{"type":"assistant","uuid":"u1","session_id":"fake-native-1","message":{"id":"m1","model":"claude-tui","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"text","text":"isolated bridge hello"}]}}'\nprintf '%s\\n' '{"type":"result","uuid":"u2","session_id":"fake-native-1","stop_reason":"end_turn","result":"done","is_error":false}'\n`);
   chmodSync(bridge, 0o700);
   const portFile = join(dir, 'port');
   const keyFile = join(dir, 'key');
   const modelsFile = join(dir, 'models');
-  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config'),
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, '.config'),
     XDG_CACHE_HOME: join(home, '.cache'), CLAUDE_CONFIG_DIR: join(home, '.claude') };
   for (const key of Object.keys(env)) {
     if (key.startsWith('ANTHROPIC_') || key.startsWith('MAGPIE_') || key === 'CLAUDE_CODE_USE_BEDROCK') delete env[key];
@@ -67,13 +74,11 @@ try {
   assert.equal(response.status, 200, `status=${response.status}; body=${text.slice(0, 300)}`);
   assert.match(text, /isolated bridge hello/, 'streamed native fake CLI text missing');
   assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/);
-  assert.ok(true, 'signed SSE response validated');
 
   const unauthorized = await fetch(url + 'messages', { method: 'POST', body, headers: { 'content-type': 'application/json' },
     signal: AbortSignal.timeout(5000) });
   assert.equal(unauthorized.status, 401, 'missing signed envelope unexpectedly accepted');
   await unauthorized.body?.cancel();
-  assert.equal(unauthorized.status, 401);
 } finally {
   if (child && child.exitCode === null) {
     child.kill('SIGTERM');
