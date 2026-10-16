@@ -8,6 +8,8 @@
 
 ### v0.2.7-rc.1 独立插件候选（未发布）
 
+外部 systemd 管理 Runtime 时，推荐在插件 `options` 中保留 `runtimeURL`，同时添加 `runtimePortFile`，例如 `"runtimePortFile": "/home/magpie/.config/magpie-tui-runtime-production/port"`。插件会在每次请求时读取仅服务用户可访问的端口文件，从而在 Runtime 重启改变端口后自动恢复，避免网关静态 URL 漂移导致的 502。该选项只允许本机回环端口，不允许指向其他主机；托管模式无需配置它。
+
 当前候选将近期审计修复直接纳入**本插件及随包的 Go Runtime**，无需编辑或重新编译 Magpie 本体。包含客户端断线时保留原工具回调、跨请求取消隔离、默认由原生 Claude Code `/usage` 读取额度，以及随包提供的只读预检命令 `magpie-tui-doctor`。该版本尚未在真实 Claude Desktop 长会话上做生产验收，不应无条件替换正在工作的生产版本。
 
 有显式外部 Runtime 配置的服务可在升级前运行：
