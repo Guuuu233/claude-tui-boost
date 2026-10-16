@@ -72,6 +72,18 @@ jobs:
         run: |
           go test -race -p 2 ./... -count=1 -timeout=240s
           go vet -p 2 ./...
+      - name: Repeat crash, disconnect and MCP handoff fault injection
+        working-directory: runtime
+        env:
+          CGO_ENABLED: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # All cases use synthetic callbacks, isolated PTY state, a fake
+          # Claude CLI and disposable tools. No authenticated inference.
+          go test -race -p 2 ./internal/bridge \
+            -run '^(TestInteractiveFaultInjection|TestInteractiveTransportMCPResultContinuesSamePTYRun|TestInteractiveTransportParallelMCPResultsCanArriveTogether|TestInteractiveAutoRecovery|TestNativeHardKillDetachedTmuxRefusesRecoveryWithoutToolReplay|TestCompaction)' \
+            -count=3 -timeout=210s
       - name: Rebuild every distributed executable from plugin source
         shell: bash
         run: |
