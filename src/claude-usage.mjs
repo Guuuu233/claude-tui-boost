@@ -1,12 +1,17 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { findExecutable, setupEnvironment } from "./first-connect.mjs";
 
 const usageLine = /^Current (session|week(?: \(([^)]+)\))?):\s*([0-9]+(?:\.[0-9]+)?)% used(?:\s*·\s*resets (.+))?$/;
 const ansi = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const denied = /\b(401|403)\b|not (?:logged|signed) in|signed out|sign-in (?:has )?expired|unauthorized|forbidden|authentication (?:failed|required)|invalid (?:access )?token/i;
 const maxOutputBytes = 64 * 1024;
+const usageEndpoint = "https://api.anthropic.com/api/oauth/usage";
+const usageCacheTtlMs = 60_000;
+const usageCache = new Map();
+const usageInFlight = new Map();
 
 function zoneParts(date, timeZone) {
   if (!timeZone) {
@@ -177,24 +182,162 @@ function runUsageCommand(executable, profileDir, env, {
   });
 }
 
+function apiUsageWindows(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Claude usage endpoint returned unreadable quota data");
+  }
+  const fields = [
+    ["five_hour", "5 hours", 5 * 60 * 60],
+    ["seven_day", "7 days", 7 * 24 * 60 * 60],
+    ["seven_day_sonnet", "7 days · Sonnet", 7 * 24 * 60 * 60],
+    ["seven_day_opus", "7 days · Opus", 7 * 24 * 60 * 60],
+  ];
+  const windows = [];
+  for (const [key, name, span] of fields) {
+    const value = payload[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const used = value.utilization;
+    if (typeof used !== "number" || !Number.isFinite(used) || used < 0 || used > 100) continue;
+    const reset = typeof value.resets_at === "string" ? Date.parse(value.resets_at) : NaN;
+    windows.push({
+      name,
+      used,
+      span,
+      ...(Number.isFinite(reset) ? { resetsAt: new Date(reset).toISOString() } : {}),
+    });
+  }
+  if (!windows.length) throw new Error("Claude usage endpoint returned no readable quota windows");
+  return windows;
+}
+
+async function readProfileAccessToken(profileDir) {
+  let raw;
+  try {
+    raw = await readFile(join(profileDir, ".credentials.json"), "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw new Error("Could not read Claude profile credentials safely");
+  }
+  let credentials;
+  try {
+    credentials = JSON.parse(raw);
+  } catch {
+    throw new Error("Claude profile credentials are unreadable");
+  }
+  const token = credentials?.claudeAiOauth?.accessToken;
+  return typeof token === "string" && token.length > 0 ? token : undefined;
+}
+
+async function readUsageFromEndpoint(accessToken, { fetchImpl = globalThis.fetch, timeoutMs = 10_000 } = {}) {
+  if (typeof fetchImpl !== "function") throw new Error("Claude usage endpoint is unavailable on this host");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  let response;
+  try {
+    response = await fetchImpl(usageEndpoint, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "anthropic-version": "2023-06-01",
+        "User-Agent": "magpie-claude-tui-plugin",
+      },
+      redirect: "error",
+      signal: controller.signal,
+    });
+  } catch {
+    clearTimeout(timer);
+    throw new Error(controller.signal.aborted
+      ? "Claude usage endpoint request timed out"
+      : "Could not connect to Claude usage endpoint");
+  }
+  if (response.status === 401 || response.status === 403) {
+    clearTimeout(timer);
+    throw new Error("Claude OAuth access token was expired or rejected");
+  }
+  if (response.status === 429) {
+    clearTimeout(timer);
+    throw new Error("Claude usage endpoint rate-limited the request");
+  }
+  if (!response.ok) {
+    clearTimeout(timer);
+    throw new Error(`Claude usage endpoint returned HTTP ${response.status}`);
+  }
+  let raw;
+  try {
+    raw = await response.text();
+  } catch {
+    clearTimeout(timer);
+    throw new Error(controller.signal.aborted
+      ? "Claude usage endpoint request timed out"
+      : "Claude usage endpoint response could not be read");
+  }
+  clearTimeout(timer);
+  if (Buffer.byteLength(raw, "utf8") > maxOutputBytes) {
+    throw new Error("Claude usage endpoint response exceeded its safety limit");
+  }
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error("Claude usage endpoint returned unreadable quota data");
+  }
+  return { windows: apiUsageWindows(payload) };
+}
+
+async function readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl }) {
+  const token = await readProfileAccessToken(profileDir);
+  if (token) return readUsageFromEndpoint(token, { fetchImpl, timeoutMs });
+
+  // macOS Keychain-backed profiles may not expose OAuth credentials in this file.
+  const home = env.HOME || homedir();
+  const cliEnv = setupEnvironment(env, home);
+  let executable = command;
+  if (!executable) executable = await findExecutable("claude", cliEnv) ?? "claude";
+  const output = await runUsageCommand(executable, profileDir, cliEnv, { spawnProcess, timeoutMs });
+  return parseClaudeUsage(output);
+}
+
 export async function readClaudeUsage({
   profileDir,
   env = process.env,
   command,
   spawnProcess,
   timeoutMs,
+  fetchImpl,
 } = {}) {
   if (typeof profileDir !== "string" || !isAbsolute(profileDir)) {
     return { windows: [], error: "Claude profile directory must be an absolute path" };
   }
-  const home = env.HOME || homedir();
-  const cliEnv = setupEnvironment(env, home);
-  let executable = command;
-  if (!executable) executable = await findExecutable("claude", cliEnv) ?? "claude";
+  const key = resolve(profileDir);
+  const cached = usageCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { windows: cached.windows.map(window => ({ ...window })) };
+  }
+  if (cached) usageCache.delete(key);
+  const pending = usageInFlight.get(key);
+  if (pending) {
+    try {
+      const value = await pending;
+      return { windows: value.windows.map(window => ({ ...window })) };
+    } catch (error) {
+      return { windows: [], error: error instanceof Error ? error.message : "Claude usage read failed" };
+    }
+  }
+
+  const request = readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl })
+    .then(value => {
+      const safeValue = { windows: value.windows.map(window => ({ ...window })) };
+      usageCache.set(key, { expiresAt: Date.now() + usageCacheTtlMs, windows: safeValue.windows });
+      return safeValue;
+    })
+    .finally(() => usageInFlight.delete(key));
+  usageInFlight.set(key, request);
   try {
-    const output = await runUsageCommand(executable, profileDir, cliEnv, { spawnProcess, timeoutMs });
-    return parseClaudeUsage(output);
+    const value = await request;
+    return { windows: value.windows.map(window => ({ ...window })) };
   } catch (error) {
-    return { windows: [], error: error instanceof Error ? error.message : "Claude Code /usage failed" };
+    return { windows: [], error: error instanceof Error ? error.message : "Claude usage read failed" };
   }
 }

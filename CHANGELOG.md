@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.6 — accurate Claude quota windows
+
+- Read the selected Claude profile's OAuth access token and request its quota windows from Anthropic's official host so Magpie can show current 5-hour and 7-day utilization.
+- Keep a successful result in process memory for 60 seconds and let Magpie retain its own cache behavior; never cache failures as valid quota data.
+- Send no prompts, transcripts, or refresh tokens. Do not log or return access tokens, and do not refresh OAuth credentials. Preserve the local CLI `/usage` fallback for profiles whose credentials are stored outside `.credentials.json`.
+- Document that the OAuth usage route is not publicly documented and may change or rate-limit requests.
+
 ## 0.2.5 — Claude quota cards
 
 - Add Magpie's plugin usage hook so Claude TUI accounts appear in the quota panel and refresh from the local Claude Code `/usage` command.

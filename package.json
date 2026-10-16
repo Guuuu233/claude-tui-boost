@@ -1,6 +1,6 @@
 {
   "name": "magpie-claude-tui-plugin",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Unofficial self-hosted Claude Code TUI provider for Magpie/OpenCode (independent, unreviewed third-party plugin)",
   "type": "module",
   "main": "./index.mjs",
