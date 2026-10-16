@@ -10,6 +10,7 @@
 - Align the ephemeral native MCP server's timeout with the existing 90-minute parked callback lifetime: 80 minutes for a tool invocation, leaving a ten-minute buffer for native resolution and cleanup, rather than allowing an inner 30-minute timeout to orphan an otherwise live client tool result.
 - Verify the already-present `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` protection in the vendored Wrapper's actual tmux launch command. Claude Code v2.1.212+ otherwise backgrounds long MCP calls after two minutes, changing the synchronous callback protocol. This is a guard against future Wrapper regression, not a second Go-level override.
 - Test a complete signed plugin-to-Runtime MCP round trip with fake Claude: tool_use → native callback registration → matching tool_result → resumed response on the same run. Reject wrong tool IDs and replayed results; no real tools or accounts.
+- Harden manual releases: require `main` and an exact `package.json` version tag, never push generated binaries back to `main`, recheck source-to-binary reproducibility and offline integrations, and publish a complete npm `.tgz` plus its digest alongside the Runtime/Helper assets. Publishing still requires a separate manual workflow invocation.
 - Add host-compatibility checks for Magpie v0.1.1268, and document that same-provider hook collisions cannot be eliminated solely within a third-party plugin.
 
 # Changelog
