@@ -29,12 +29,14 @@ import (
 
 const interactiveBridgeEnv = "MAGPIE_CLAUDE_INTERACTIVE_BRIDGE"
 
-// Claude Code can abort an otherwise healthy MCP call after five minutes
-// without progress, severing the pending tool_result and turning Desktop's
-// later continuation into a 409. The Magpie MCP server only receives a
-// response when the client completes its tool, so allow long local builds.
-// The setting is scoped to this ephemeral MCP server, not to user servers.
-const interactiveMCPToolTimeoutMS = 30 * 60 * 1000
+// The native MCP callback is parked for up to 90 minutes while Desktop runs
+// external work, but Claude Code also applies its own per-MCP call timeout.
+// If the latter expires first (previously 30m), the native waiter disappears
+// and the tool_result arrives as a 409 even though Runtime retained the run.
+// Allow long builds, leave ten minutes for resolution/cleanup before the
+// 90-minute parked deadline, and scope this to our ephemeral MCP server only.
+// Do not disable the MCP timeout: abandoned work must remain bounded.
+const interactiveMCPToolTimeoutMS = 80 * 60 * 1000
 
 func interactiveMCPConfig(helperExe string, helperArgv []string, callback, toolsPath string) string {
 	config, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{

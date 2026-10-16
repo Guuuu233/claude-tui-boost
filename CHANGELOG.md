@@ -7,6 +7,7 @@
 - Keep Go builds byte-reproducible across the commit/tag boundary with `-trimpath -buildvcs=false`; CI rebuilds and `cmp`s all eight macOS/Linux binary variants against those shipped in the repo.
 - Include an independent, signed loopback end-to-end test using the packaged Runtime and fake Claude (never a real login), enforced in branch/PR CI.
 - Add Race-checked fault injection for delayed/repeated cancellation versus new MCP handoff and process completion; run the existing native hard-kill, parallel-tool, auto-recovery and compaction tests together three times in PR CI. All use synthetic tools only.
+- Align the ephemeral native MCP server's timeout with the existing 90-minute parked callback lifetime: 80 minutes for a tool invocation, leaving a ten-minute buffer for native resolution and cleanup, rather than allowing an inner 30-minute timeout to orphan an otherwise live client tool result.
 - Add host-compatibility checks for Magpie v0.1.1268, and document that same-provider hook collisions cannot be eliminated solely within a third-party plugin.
 
 # Changelog
