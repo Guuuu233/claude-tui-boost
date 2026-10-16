@@ -49,6 +49,22 @@ jobs:
         env:
           MAGPIE_TUI_TEST_HOST: ${{ github.workspace }}/.compat-host/internal/plugin/host.js
         run: bun test
+      - name: Provide offline Claude CLI stub for Runtime integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/claude-stub-bin"
+          cat > "$RUNNER_TEMP/claude-stub-bin/claude" <<'STUB'
+          #!/usr/bin/env sh
+          if [ "${1:-}" = "--version" ]; then
+            printf '%s\n' '2.1.296 (Claude Code offline test stub)'
+            exit 0
+          fi
+          echo 'Refusing real Claude inference in CI' >&2
+          exit 93
+          STUB
+          chmod 700 "$RUNNER_TEMP/claude-stub-bin/claude"
+          echo "$RUNNER_TEMP/claude-stub-bin" >> "$GITHUB_PATH"
       - name: Race tests and static analysis for shipped Go Runtime
         working-directory: runtime
         env:
