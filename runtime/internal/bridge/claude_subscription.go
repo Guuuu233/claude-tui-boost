@@ -3527,6 +3527,9 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	if err := validateInteractiveOutboundCredentials(body, r.Header); err != nil {
 		return writeError(w, from, http.StatusBadRequest, err.Error()), err.Error()
 	}
+	if claudeDesktopCompaction(req) {
+		req = claudeDesktopCompactionRequest(req)
+	}
 	if err := validateInteractiveRequest(req); err != nil {
 		return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 	}

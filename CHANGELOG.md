@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4 — safe Claude Desktop compaction
+
+- Route Claude Code's dedicated Desktop `/compact` request through an isolated, tool-free summary turn, preserving user/assistant turns and structured historical tool results and images; include the system prompt as labelled archival context.
+- Seed a separate native Claude CLI session for the summary; do not treat completed historical tool calls as pending work or overwrite the original conversation checkpoint.
+- Document the additional local Claude session transcript and the existing Claude Code account path used to summarize it.
+
 ## 0.2.3 — historical-message continuity and bounded recovery
 
 - Preserve a live MCP callback across exact, generated token-budget reminder removal from a historical user message; retain strict comparison of user instructions, tool identities, arguments, image payloads and non-budget reminders.

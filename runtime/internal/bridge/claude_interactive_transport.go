@@ -742,6 +742,9 @@ func (b *subscriptionBridge) startInteractiveRequest(ctx context.Context, req *R
 	if err != nil {
 		return nil, nil, err
 	}
+	if claudeDesktopCompaction(req) {
+		return b.startCompaction(ctx, req, model, configDir, owner)
+	}
 	if claudeDesktopSuggestion(req) {
 		side := claudeDesktopSuggestionRequest(req)
 		prompt, err := renderInteractiveFirstPrompt(side)
@@ -1302,6 +1305,18 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	if len(req.Schema) > 0 {
 		args = append(args, "--json-schema", string(req.Schema))
 	}
+	if readOnly && len(req.compactHistory) > 0 {
+		var seedPath string
+		resumeID, seedPath, err = writeCompactionTranscript(work, configDir, req)
+		if err != nil {
+			clean()
+			if seedPath != "" {
+				_ = os.Remove(seedPath)
+			}
+			return nil, nil, err
+		}
+		args = append(args, "--resume", resumeID)
+	}
 	cmd := commandContext(context.Background(), bridge, args...)
 	cmd.Dir = work
 	var nativeLease *os.File
@@ -1621,6 +1636,10 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 				config.NoteLimits(user, claudeLimits(msg.RateLimitInfo))
 			}
 		case "assistant":
+			if r.readOnlyRecovery && msg.Message.Model == "<synthetic>" {
+				pmu.Unlock()
+				continue
+			}
 			// A transcript row may be appended only after an MCP callback has
 			// already delivered and settled its tool turn. Do not start a
 			// second assistant message: KStart would erase the still-shown

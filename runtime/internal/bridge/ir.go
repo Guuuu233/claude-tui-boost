@@ -88,18 +88,20 @@ type Tool struct {
 
 // Request is a call to a model, whichever API it arrived in.
 type Request struct {
-	Model      string
-	System     string
-	Messages   []Message
-	Tools      []Tool
-	ToolChoice string // "" | auto | none | required | name:<tool>
-	MaxTokens  int
-	Temp       *float64
-	TopP       *float64
-	Stop       []string
-	Stream     bool
-	Effort     string // low | medium | high | xhigh | max, when the client asked
-	Thinking   bool   // the client asked for visible reasoning
+	compactHistory []Message
+	compactSystem  string
+	Model          string
+	System         string
+	Messages       []Message
+	Tools          []Tool
+	ToolChoice     string // "" | auto | none | required | name:<tool>
+	MaxTokens      int
+	Temp           *float64
+	TopP           *float64
+	Stop           []string
+	Stream         bool
+	Effort         string // low | medium | high | xhigh | max, when the client asked
+	Thinking       bool   // the client asked for visible reasoning
 	// ThinkOff is the client turning reasoning off: effort "none" (which
 	// Effort reads as low, for vendors with no way to turn it off) or an
 	// Anthropic request with thinking disabled.

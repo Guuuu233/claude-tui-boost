@@ -18,6 +18,12 @@ Claude Desktop may add or remove a **standalone generated token-budget reminder*
 
 Enabling this flag is **not** a license to replay unknown `Edit`/`Write`/`Bash` side effects. If there is no exact live callback or eligible Dirty checkpoint, the runtime must still refuse unsafe continuations with HTTP 409. Previously orphaned tool results are not magically made resumable by upgrading the binary. Operator-private legacy migration certificates remain separate and are never distributed.
 
+## Claude Desktop compaction (v0.2.4)
+
+Claude Desktop's dedicated `/compact` request may include completed historical `tool_use` and `tool_result` blocks. The runtime recognizes the compaction protocol and writes user/assistant turns plus structured history into a **separate native Claude Code session** for a tool-free summary turn; any system prompt is included as labelled archival context. It does not replay historical tools or resume/replace the original conversation checkpoint. This only addresses the compaction request shape; unrelated 409/502 failures remain subject to the normal fail-closed behavior.
+
+To seed this separate session, the full source history, including tool content and images, is written as an additional JSONL transcript under the configured Claude profile and sent through that profile's Claude Code authentication path. The extra local transcript can remain according to the CLI's normal session-retention behavior. Keep the profile private and review its session files if you need to remove the extra copy.
+
 ## Managed installation settings
 
 For the normal plugin-center/automatic installation, set any of the six boolean flags above to exactly `1` (enable) or `0` (disable) in the **Magpie server process environment**, then reload the plugin host at an idle boundary. Values are read when that account's managed runtime starts. A client's local shell environment does not configure a Magpie server running on a VPS; services need their own service environment. Exporting a variable after Magpie has already started does not update that process.
