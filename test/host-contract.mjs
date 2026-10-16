@@ -1,8 +1,8 @@
-// Executes the inspected Magpie host itself, with an isolated HOME and local
-// synthetic HTTP runtime. No Claude, native credentials or production service.
+// Executes the inspected Magpie host itself, with an isolated HOME, a fake
+// Claude CLI and local synthetic HTTP runtime. No real Claude or production service.
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -12,6 +12,15 @@ import assert from "node:assert/strict";
 const hostSource = process.argv[2];
 if (!hostSource) throw new Error("Magpie host.js source path required");
 const folder = await mkdtemp(join(tmpdir(), "magpie-tui-host-test-"));
+const claudeBin = join(folder, "bin");
+await mkdir(claudeBin);
+const claudeStub = join(claudeBin, "claude");
+await writeFile(claudeStub, `#!/bin/sh
+if [ "$1" != "-p" ] || [ "$2" != "/usage" ]; then exit 80; fi
+if [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then exit 81; fi
+if [ -n "\${ANTHROPIC_AUTH_TOKEN:-}\${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then exit 82; fi
+printf '%s\\n' 'Current session: 13% used · resets Oct 17 at 9am (UTC)' 'Current week (all models): 27% used · resets Oct 20 at 4pm (UTC)'
+`, { mode: 0o700 });
 const keyA = "public-synthetic-plugin-host-key-A";
 const keyB = "public-synthetic-plugin-host-key-B";
 const captures = [];
@@ -45,7 +54,7 @@ await writeFile(authPath, JSON.stringify({
 }), { mode: 0o600 });
 const child = spawn(process.env.BUN_BIN ?? "bun", [hostSource], {
   cwd: folder,
-  env: { PATH: process.env.PATH, HOME: folder, XDG_CONFIG_HOME: folder, XDG_CACHE_HOME: folder },
+  env: { PATH: `${claudeBin}:${process.env.PATH}`, HOME: folder, XDG_CONFIG_HOME: folder, XDG_CACHE_HOME: folder },
   stdio: ["pipe", "pipe", "pipe"],
 });
 let stderr = "";
@@ -97,6 +106,11 @@ try {
   const providers = (await rpc("providers", {})).at(-1).result;
   assert.ok(JSON.stringify(providers).includes("claude-tui"));
   assert.ok(JSON.stringify(providers).includes("runtime-model"));
+  const quota = (await rpc("usage", { provider: "claude-tui", account: "claude-tui" })).at(-1).result;
+  assert.deepEqual(quota.windows.map(({ name, used }) => ({ name, used })), [
+    { name: "5 hours", used: 13 },
+    { name: "7 days", used: 27 },
+  ]);
   const body = '{ "model":"runtime-model", "system":"preserve", "messages":[{"role":"user","content":"hello"}], "stream":true }';
   async function fetch(account, session, payload = body) {
     const result = await rpc("fetch", {

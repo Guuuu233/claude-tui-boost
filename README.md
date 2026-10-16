@@ -53,12 +53,14 @@ magpie plugin login claude-tui
 - 动态历史内容：在 `main` 当前源码中，只有**严格匹配**的 token 余额提示可以在旧用户消息的独立文本块被删除时忽略；其他用户指令、工具参数和普通提醒依然严格校验。
 - 受控只读恢复（v0.2.3）：`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1` **默认关闭**。只有活跃的原始工具回调、完全匹配的会话与模型、安全设置、已标记 Dirty 的持久化 checkpoint 等条件全部满足，才允许终止失配进程并启动一次**禁用工具的只读恢复轮次**。不会重新执行已经完成的修改，也不能复活此前已死亡的 MCP 回调。
 - Claude Desktop `/compact`（v0.2.4）：识别专用压缩请求，将用户/助手消息及历史工具调用、结果和图片写入独立 Claude Code CLI 会话；系统提示作为标注过的历史背景。摘要轮禁用工具，历史工具不会重新执行，原会话 checkpoint 不会被替换。摘要内容会经过已配置的 Claude Code 登录路径；隔离 transcript 会额外保存在该 Claude profile 的会话目录中，遵循 CLI 的会话保留行为。
+- Claude 额度卡（v0.2.5）：Magpie 刷新插件额度时，在运行 Magpie 的主机执行本机 `claude -p /usage`。托管账号按各自保存的 Claude 配置目录读取；显式配置使用 `claudeConfigDir`、`CLAUDE_CONFIG_DIR` 或默认 `~/.claude`。插件不直接请求 Anthropic 额度接口，也不把 API/OAuth 环境令牌传给子进程；CLI 未登录或无法读取时会显示错误，不伪造为 0%。
 - 旧会话的定向迁移需要私有证书与人工核查，不会作为普通插件安装功能开放。更完整的机制、其他开关、限制及拒绝场景见 [RECOVERY.md](RECOVERY.md)。
 
 **托管安装配置**：六个经过明确允许的恢复环境变量只能取 `0` 或 `1`，且要在**Magpie 宿主服务启动环境**中设置，再在空闲时重新加载插件。仅在本机 Desktop 或终端设置变量，不能改变另一台 VPS 上的 Magpie 进程。不要为了追求“无感恢复”而一次性启用全部开关。生产环境是否启用，以及测试通过与否，不能从 GitHub 源码默认值直接推断。
 
 ### 版本、更新与兼容性
 
+- **v0.2.5 补上 Claude TUI 插件的额度读取钩子**，让 Magpie 的额度刷新读取对应 Claude Code profile 的 `/usage`。在运行 Magpie 的主机更新插件后，再从额度页刷新；更新 GitHub 插件不会自动升级已经安装在 VPS 上的副本。若仍显示读取失败，检查该主机上的 `claude` CLI、账号登录状态与 `CLAUDE_CONFIG_DIR`。
 - **v0.2.4 修复 Claude Desktop `/compact` 将已结束的历史工具误当作待接续调用的问题**。在 Magpie 中更新插件，或明确安装 `magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.4`。其他 409/502 仍需按实际错误排查；固定旧版本的安装不会自动获得此修复。升级前应结束正在执行的工具、保留旧状态及回滚途径。
 - 插件携带自己的 Runtime、Helper 和 Wrapper；升级 Magpie **不会自动替换这些文件**，却可能修改插件加载、模型 API 转换、会话标识、流式请求与登录流程，因此**不能承诺对所有未来 Magpie/Claude Code 版本兼容**。有按已验证版本、最新发布版、上游 `main` 执行的兼容检查，详见 [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md)。
 - 支持 macOS 与 Linux 的四种 CPU/OS 组合发布构建；交叉编译通过**不代表**四种平台全部经历真实 OAuth 与 GUI 测试。用户数据目录、订阅额度、历史会话和私人恢复凭证不会随 GitHub 安装包分发。
@@ -117,6 +119,8 @@ The existing **连接已登录 Claude** method remains available for advanced us
 **Available since v0.2.3:** An exact generated token-budget reminder inside an old user message may be ignored during handoff when no other content changed. For other history drift, an opt-in, *tool-free* fallback (`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1`) requires the exact live tool ID, correct account/model/safeguards, canonical thread and an existing Dirty checkpoint. This cannot revive dead callbacks, blindly replay an Edit/Write/Bash or guarantee that every 409 disappears. See [RECOVERY.md](RECOVERY.md); this opt-in flag is included in v0.2.3 and remains disabled by default.
 
 **Available since v0.2.4:** Claude Desktop's dedicated `/compact` request is recognized and summarized in a separate native Claude Code CLI session. User/assistant turns and structured tool/image blocks are retained; a system prompt is included as labelled archival context. Historical tool calls remain transcript evidence; the summary request has no tools, so those calls are not re-executed. The original conversation checkpoint is not resumed or overwritten. The full source history, including tool content and images, is written to an additional JSONL session under the configured Claude profile and passes through that profile's Claude Code authentication path; it can remain under the CLI's normal session-retention behavior.
+
+**Available since v0.2.5:** Magpie's plugin usage hook runs `claude -p /usage` locally when it reads a Claude TUI account. Managed accounts use their own selected profile; explicit runtime configuration uses `claudeConfigDir`, `CLAUDE_CONFIG_DIR`, or `~/.claude`. The plugin does not call Anthropic's quota endpoint or forward API/OAuth token environment variables to that subprocess. A missing CLI, sign-in error, or unrecognized response is returned as a quota error with no invented allowance.
 
 The bridge keeps a Claude Code process alive across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation, parallel tools and read-only recovery of certain interrupted conversations. Because the Desktop and CLI can reshape historic messages, some tool handoffs can still return HTTP 409 rather than risk executing a tool twice. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
 

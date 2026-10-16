@@ -1,4 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readClaudeUsage } from "./claude-usage.mjs";
 
 export const PROVIDER_ID = "claude-tui";
 const sha = value => createHash("sha256").update(value).digest("hex");
@@ -75,6 +78,9 @@ async function requireAuth(getAuth) {
 export function createHooks(configuration, transport = globalThis.fetch, proofKey) {
   const { url, models } = normalizeConfig(configuration);
   const key = proofKey ?? randomBytes(32);
+  const usageProfileDir = configuration.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ??
+    join(process.env.HOME || homedir(), ".claude");
+  const usageReader = configuration.usageReader ?? readClaudeUsage;
   const proof = digest => mac(key, "hook-proof/v1\0" + digest);
   return {
     async config(config) {
@@ -95,6 +101,13 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
     auth: {
       provider: PROVIDER_ID,
       methods: [{ type: "api", label: "Local TUI runtime connection key" }],
+      async usage(getAuth) {
+        await requireAuth(getAuth);
+        return usageReader({
+          profileDir: usageProfileDir,
+          env: configuration.usageEnv ?? process.env,
+        });
+      },
       async loader(getAuth) {
         await requireAuth(getAuth);
         return {

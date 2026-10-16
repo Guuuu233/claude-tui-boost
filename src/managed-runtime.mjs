@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createHooks, PROVIDER_ID, _internal } from "./index.mjs";
+import { readClaudeUsage } from "./claude-usage.mjs";
 import { runtimeEnvironment } from "./runtime-environment.mjs";
 import { beginFirstConnect, findExecutable, setupEnvironment } from "./first-connect.mjs";
 
@@ -176,6 +177,7 @@ export function createManagedHooks({
   spawnRuntime,           // test seam: (argv, opts) => child process
   runtimeEntry: entryOf,  // test seam: () => runtime entry path
   transport,              // test seam: forwarded to createHooks fetch
+  usageReader = readClaudeUsage, // test seam: isolated account-scoped quota reads
   env = process.env,
 } = {}) {
   if (platform() === "win32") {
@@ -420,6 +422,18 @@ export function createManagedHooks({
           };
         },
       }],
+      async usage(getAuth) {
+        const auth = await getAuth();
+        const spec = auth?.type === "api" ? decodeKey(auth.key) : null;
+        if (!spec) return { windows: [], error: "Claude TUI account configuration is invalid" };
+        let profile;
+        try {
+          profile = profileDir(spec.profile, home);
+        } catch {
+          return { windows: [], error: "The Claude profile for this account is unavailable" };
+        }
+        return usageReader({ profileDir: profile, env: safeChildEnv(profile) });
+      },
       async loader(getAuth) {
         const auth0 = await getAuth();
         if (auth0?.key && loaderCache.has(auth0.key)) return loaderCache.get(auth0.key);

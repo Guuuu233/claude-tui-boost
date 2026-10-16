@@ -1,27 +1,22 @@
-# v0.2.4 — Claude Desktop compaction with isolated history
+# v0.2.5 — Claude quota cards
 
-This maintenance release fixes Claude Desktop `/compact` requests that include completed historical tool calls and results. It is an **unofficial, experimental third-party** provider; not reviewed or endorsed by Magpie or Anthropic.
+This maintenance release adds the missing Magpie plugin usage hook for Claude TUI accounts. It is an **unofficial, experimental third-party** provider; it is not reviewed or endorsed by Magpie or Anthropic.
 
 ## Changes
 
-- Recognize Claude Code's dedicated compaction request and route it through a separate native Claude Code session.
-- Preserve user/assistant turns and structured tool results and images; include any system prompt as labelled archival context. The new summary turn has no tools, so historical tool calls are not re-executed.
-- Keep the original conversation checkpoint separate; compaction does not resume or replace it.
-- Retain v0.2.3 history-continuity and bounded read-only recovery behavior.
+- Make Claude TUI accounts available to Magpie's quota panel and refresh them with the local Claude Code `claude -p /usage` command.
+- Read managed accounts from their own saved Claude profile. Explicit runtime configuration uses `claudeConfigDir`, then `CLAUDE_CONFIG_DIR`, then `~/.claude`.
+- Surface a clear quota error when Claude Code is missing, signed out, or returns no readable allowance; do not fabricate a zero-usage reading.
 
 ## Data handling
 
-To seed the isolated summary session, the full source history, including tool content and images, is written as an additional JSONL transcript under the configured Claude Code profile. The summary is sent through that profile's normal Claude Code authentication path. This adds a local transcript copy that can remain under the CLI's normal session-retention behavior; the original conversation checkpoint remains separate. Keep the Claude profile private and review its session files if you need to remove that copy.
+The plugin does not call Anthropic's quota endpoint directly and does not pass API/OAuth token environment variables to the usage subprocess. The local Claude Code CLI uses the selected profile to answer `/usage`; as with Magpie's native Claude quota reader, that CLI may contact its service to retrieve current allowance information. The plugin sends no conversation transcript as part of this usage check.
 
-## Limits and safe upgrades
+## Limits and upgrade
 
-This fixes the dedicated `/compact` request shape. It does **not** guarantee that unrelated HTTP 409/502 errors disappear, revive dead MCP callbacks, or authorize replay of uncertain `Edit`/`Write`/`Bash` effects. Verify actual files and results before retrying an interrupted side-effecting tool. CI uses synthetic/non-inferencing Claude and isolated Magpie host tests; it does not exercise real OAuth or GUI sessions.
-
-### Install / update
+This adds quota support for accounts served by this plugin. It does not upgrade an already installed plugin on a VPS and does not change Magpie's built-in Claude quota reader. Update the plugin on the host that runs Magpie, then refresh its quota page. If the card reports an error, check that host's Claude Code installation, sign-in state, and profile directory. CI uses a synthetic local CLI and does not access a real Claude account.
 
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.4
+magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.5
 magpie plugin login claude-tui
 ```
-
-If already connected, use Magpie's installed-plugin update mechanism after completing active tools, then verify a new harmless request. Do not reset existing checkpoints or remove a running session solely to upgrade.

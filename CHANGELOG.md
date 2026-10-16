@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5 — Claude quota cards
+
+- Add Magpie's plugin usage hook so Claude TUI accounts appear in the quota panel and refresh from the local Claude Code `/usage` command.
+- Read managed accounts from their own configured Claude profile. The explicit runtime mode uses `claudeConfigDir`, `CLAUDE_CONFIG_DIR`, or `~/.claude` in that order.
+- Do not call Anthropic's quota endpoint directly or pass API/OAuth token environment variables to the usage subprocess; report missing CLI, sign-in, and unreadable quota errors instead of fabricated zero usage.
+
 ## 0.2.4 — safe Claude Desktop compaction
 
 - Route Claude Code's dedicated Desktop `/compact` request through an isolated, tool-free summary turn, preserving user/assistant turns and structured historical tool results and images; include the system prompt as labelled archival context.
