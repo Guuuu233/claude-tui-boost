@@ -6,7 +6,7 @@ This is a **local, isolated release candidate**, not a published production upda
 - Keep the original MCP tool callback on an HTTP disconnect even before registration; prevent repeated or delayed disconnect callbacks from terminating a newer continuation. Preserve the existing maximum 90-minute interactive tool wait; no side-effecting tool replay.
 - Ship `magpie-tui-doctor` as a read-only command to catch duplicate enabled adapters, runtime port drift, file permissions/ownership, and symlinked runtime state. It never handles login credentials or modifies services.
 - Test against upstream Magpie v0.1.1268 in the host-compatibility matrix. Fail closed on missing cross-plugin session signatures; never replay uncertain write operations.
-- Rebuild and checksum-verify all bundled Darwin/Linux arm64/x64 Runtime and MCP Helper executables before packing.
+- Rebuild and checksum-verify all bundled Darwin/Linux arm64/x64 Runtime and MCP Helper executables before packing. Builds use Go 1.27.1 with `-trimpath -buildvcs=false` to avoid repository revision/dirty-tree stamping changing the binary after a commit; source provenance comes from the tagged Git commit, not embedded VCS metadata.
 
 **Known host limitation:** Magpie v0.1.1268 invokes hooks from all installed plugins. Two enabled plugins claiming `claude-tui` can still overwrite each other's `x-g3-hook-*` headers in the host. A third-party plugin cannot guarantee host-wide hook isolation. The provider's fetch refuses an invalid proof, and the packaged doctor detects duplicate installs, but a separate upstream host fix is needed to make arbitrary cross-plugin hook interference impossible. **No Magpie core patch is included in this package.**
 

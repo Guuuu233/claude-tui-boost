@@ -4,6 +4,8 @@
 - Default to native Claude Code `/usage`, with direct OAuth usage an explicit opt-in and isolated caches.
 - Ship the `magpie-tui-doctor` read-only deployment checker as part of the plugin package, catching duplicate adapters, stale runtime ports, incorrect file ownership and permissions, and symlinks.
 - Build all platform binaries from the plugin's included Runtime source and validate the `SHA256SUMS` manifest during `npm pack`.
+- Keep Go builds byte-reproducible across the commit/tag boundary with `-trimpath -buildvcs=false`; CI rebuilds and `cmp`s all eight macOS/Linux binary variants against those shipped in the repo.
+- Include an independent, signed loopback end-to-end test using the packaged Runtime and fake Claude (never a real login), enforced in branch/PR CI.
 - Add host-compatibility checks for Magpie v0.1.1268, and document that same-provider hook collisions cannot be eliminated solely within a third-party plugin.
 
 # Changelog
