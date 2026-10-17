@@ -17,7 +17,7 @@ magpie plugin login claude-tui
 
 **重要限制 / Important:** 这是未经 Anthropic 和 Magpie 官方认可的实验性第三方实现。Magpie 上游[因自动化流量经交互式 TUI 运行的账户风险而拒绝了相关方案](https://github.com/yetone/magpie/pull/707)。使用个人 Claude 订阅向第三方 Agent 提供调用，可能不符合所适用的服务条款，并带来封号、限制或计费风险。**不能保证安全合规、账号不被限制，也不提供“翻倍额度”的承诺。** 如需正式授权的 SDK/API 集成，请使用 Anthropic 官方 API。
 
-[为什么关心 `-p` / SDK？](#为什么-p--sdk-用户关心它) · [实测数据与限制](#实测数据与限制) · [中文使用说明](#中文使用说明) · [English guide](#english-installation--security-guide) · [首次连接](FIRST_CONNECT.md) · [恢复机制](RECOVERY.md) · [宿主兼容性](HOST_COMPATIBILITY.md) · [更新记录](CHANGELOG.md)
+[为什么关心 `-p` / SDK？](#为什么-cli-与-sdk-用户关心它) · [实测数据与限制](#实测数据与限制) · [中文使用说明](#中文使用说明) · [English guide](#english-installation--security-guide) · [首次连接](FIRST_CONNECT.md) · [恢复机制](RECOVERY.md) · [宿主兼容性](HOST_COMPATIBILITY.md) · [更新记录](CHANGELOG.md)
 
 ## 中文使用说明
 
@@ -37,7 +37,7 @@ magpie-tui-doctor --plugins /path/to/plugins.json --runtime-dir /path/to/runtime
 
 在 Magpie v0.1.1268 中，宿主可能让两个同名插件的请求头相互覆盖；此问题不能由第三方插件完整消除。候选采用“只允许单一启用实例 + 错误签名直接拒绝”的安全策略，不包含任何 Magpie 核心补丁。当前候选的源码、测试与发布说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
-### 为什么 `-p` / SDK 用户关心它？
+### 为什么 CLI 与 SDK 用户关心它？
 
 常见的 `claude -p` 或 Claude Agent SDK 工作流是非交互式的。**本插件的差异是把符合 Magpie 接口的 Agent 请求交给真正处于交互模式的 Claude Code TUI 执行**，并用 Go Runtime 管理持久会话、流式输出和 MCP 工具结果续接，而不是声称通过修改模型或直接增加订阅配额。
 
@@ -83,7 +83,7 @@ Magpie / OpenCode / 接入 Magpie 网关的客户端
 前提：支持 GitHub 插件安装的 Magpie、macOS/Linux（arm64 或 amd64）、官方 Claude Code CLI **2.1.268 或更新版本**、可运行 Bun/tmux 的环境。**原生 Windows 未支持**。
 
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin
+magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7-rc.4
 magpie plugin login claude-tui
 ```
 
@@ -99,7 +99,7 @@ magpie plugin login claude-tui
 - 动态历史内容：在 `main` 当前源码中，只有**严格匹配**的 token 余额提示可以在旧用户消息的独立文本块被删除时忽略；其他用户指令、工具参数和普通提醒依然严格校验。
 - 受控只读恢复（v0.2.3）：`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1` **默认关闭**。只有活跃的原始工具回调、完全匹配的会话与模型、安全设置、已标记 Dirty 的持久化 checkpoint 等条件全部满足，才允许终止失配进程并启动一次**禁用工具的只读恢复轮次**。不会重新执行已经完成的修改，也不能复活此前已死亡的 MCP 回调。
 - Claude Desktop `/compact`（v0.2.4）：识别专用压缩请求，将用户/助手消息及历史工具调用、结果和图片写入独立 Claude Code CLI 会话；系统提示作为标注过的历史背景。摘要轮禁用工具，历史工具不会重新执行，原会话 checkpoint 不会被替换。摘要内容会经过已配置的 Claude Code 登录路径；隔离 transcript 会额外保存在该 Claude profile 的会话目录中，遵循 CLI 的会话保留行为。
-- Claude 额度卡（v0.2.7-rc.1）：默认由所选 profile 对应的**原生 Claude Code CLI** 执行 `claude -p /usage`，不因发现 `.credentials.json` 中的 OAuth access token 而自行直连额度接口。旧的 HTTPS 额度读取仅在明确配置 `usageMode: "direct"` 时启用，两条路径有相互隔离的 60 秒缓存。额度读取失败返回错误，不伪造 0%；不会在失败时自动切换为直接 OAuth。托管账号始终按各自 profile 查询。
+- Claude 额度卡（v0.2.7-rc.4）：默认由所选 profile 对应的**原生 Claude Code CLI** 使用无工具、无会话持久化的独立 `claude -p /usage` 查询，不因发现 `.credentials.json` 中的 OAuth access token 而自行直连额度接口。旧的 HTTPS 额度读取仅在明确配置 `usageMode: "direct"` 时启用，两条路径有相互隔离的 60 秒缓存。额度读取失败返回错误，不伪造 0%；不会在失败时自动切换为直接 OAuth。托管账号始终按各自 profile 查询。
 - 旧会话的定向迁移需要私有证书与人工核查，不会作为普通插件安装功能开放。更完整的机制、其他开关、限制及拒绝场景见 [RECOVERY.md](RECOVERY.md)。
 
 **托管安装配置**：六个经过明确允许的恢复环境变量只能取 `0` 或 `1`，且要在**Magpie 宿主服务启动环境**中设置，再在空闲时重新加载插件。仅在本机 Desktop 或终端设置变量，不能改变另一台 VPS 上的 Magpie 进程。不要为了追求“无感恢复”而一次性启用全部开关。生产环境是否启用，以及测试通过与否，不能从 GitHub 源码默认值直接推断。
@@ -135,7 +135,7 @@ This provider uses a locally installed, already signed-in Claude Code **interact
 
 Requirements: Magpie with GitHub plugin installation support, official Claude Code **v2.1.268 or newer** installed, and macOS or Linux (arm64 / x86_64). Bun is supplied by the Magpie plugin host. The automatic connection flow prepares tmux and a dedicated Claude profile; native Windows is unsupported. The plugin/runtime and Claude Code must run on the same machine; installing on a Mac does not update a VPS.
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin
+magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7-rc.4
 magpie plugin login claude-tui
 ```
 
