@@ -55,7 +55,7 @@ import {
 } from "./hook-install.ts";
 import { makePrintErrorResult } from "./print-result.ts";
 import { runJsonSchemaStopHook, runRuntimeHook } from "./stop-hook.ts";
-import { buildClaudeLaunchCommand, interactiveMcpBackgroundEnvArgs } from "./launch-command.ts";
+import { buildClaudeLaunchCommand, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "./launch-command.ts";
 import { writeNativeTmuxGuard } from "./native-tmux-guard.ts";
 import {
   apiErrorStatusFromRow,
@@ -664,6 +664,7 @@ function startTmux(): void {
   const envArgs = [
     // Keep MCP calls in the foreground until the client handoff completes.
     ...interactiveMcpBackgroundEnvArgs(),
+    ...nativeAutoCompactionLaunchEnv(process.env).envArgs,
     ...claudeAuthEnvArgs(process.env, { localAuth: hasDesplegaFlag("local-auth") }),
     "CLAUDE_BRIDGE_RUNTIME_HOOK=1",
     `CLAUDE_BRIDGE_RUN_DIR=${runDir}`,
@@ -680,7 +681,7 @@ function startTmux(): void {
   const launchCommand = buildClaudeLaunchCommand({
     claudePath,
     claudeArgs,
-    unsetEnvArgs: claudeUnsetEnvArgs(),
+    unsetEnvArgs: [...claudeUnsetEnvArgs(), ...nativeAutoCompactionLaunchEnv(process.env).unsetEnvArgs],
     envArgs,
     exitStatusPath: claudeExitStatusPath,
     holdMs: TMUX_EXIT_HOLD_MS,

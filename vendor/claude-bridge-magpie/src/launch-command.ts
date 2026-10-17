@@ -12,6 +12,23 @@ export function interactiveMcpBackgroundEnvArgs(): string[] {
   return ["CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0"];
 }
 
+/**
+ * The Go Runtime decides which side owns automatic compaction. A tmux server
+ * can outlive that Runtime and retain a different (or missing) environment.
+ * Pass this decision explicitly to the *native Claude* child, not just to the
+ * Bun wrapper started by Go.
+ */
+export function nativeAutoCompactionLaunchEnv(env: NodeJS.ProcessEnv): {
+  unsetEnvArgs: string[];
+  envArgs: string[];
+} {
+  if (env.DISABLE_AUTO_COMPACT === "1") {
+    return { unsetEnvArgs: [], envArgs: ["DISABLE_AUTO_COMPACT=1"] };
+  }
+  // Standalone one-shot calls must not inherit a stale tmux server's flag.
+  return { unsetEnvArgs: ["-u", "DISABLE_AUTO_COMPACT"], envArgs: [] };
+}
+
 export function shellQuote(value: string): string {
   if (value.length === 0) return "''";
   return `'${value.replace(/'/g, `'\\''`)}'`;
