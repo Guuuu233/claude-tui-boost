@@ -1,8 +1,23 @@
-# Magpie Claude TUI 插件 / Claude TUI for Magpie
+# Magpie Claude TUI — interactive Claude Code for `-p` / SDK-style workflows
 
-> **非官方第三方项目（experimental）**。并非 Anthropic、Magpie 或 `magpie-community/plugins` 官方认可的 Claude API 接入方式。通过 Claude 个人订阅供第三方工具调用可能不符合所适用的服务条款，存在封禁、额度和计费风险。**安装插件不会自动获得 Claude 账号或调用资格**，请自行核对当前条款；如需授权的 API 集成，请使用官方 API。
+**Make API-shaped agent workflows work through a real interactive Claude Code TUI, rather than launching a fresh headless `claude -p` process for each turn.**
 
-[中文使用说明](#中文使用说明) · [English installation & security guide](#english-installation--security-guide) · [首次连接](FIRST_CONNECT.md) · [恢复机制](RECOVERY.md) · [宿主兼容性](HOST_COMPATIBILITY.md) · [更新记录](CHANGELOG.md)
+**额度效率是这个项目的核心动机：**在我们提交给 Magpie 上游的[一组 Claude Pro + Opus 5.5 对照测试](https://github.com/yetone/magpie/pull/707)中，交互式 TUI 路径每单位 API 等价工作量消耗的 **5 小时额度约比 `claude -p` 少 44%～50%（约 1.8～2 倍额度使用效率）**。这是一组特定负载的历史观察，**不是官方额度翻倍、稳定收益保证或 Anthropic 的计费公式**；缓存命中、提示词、模型和任务分布都可能影响差异。
+
+**Who benefits?** Magpie/OpenCode users and developers whose **`-p` / Claude Agent SDK-style workloads can route through a Magpie-compatible provider endpoint**. The plugin translates those requests into a persistent **real Claude Code TUI** session through tmux/PTY, returning streams and MCP tool callbacks to the caller. **It does not patch the standalone `claude -p` executable or automatically change the usage of an unconfigured SDK.**
+
+**工作流：** `兼容 Magpie 的 Agent / SDK 客户端 → Magpie 网关 → Claude TUI 插件 + Go Runtime → 原生交互式 Claude Code`。完整 SDK 接入仍取决于客户端协议适配；不保证所有 SDK 即插即用。
+
+**快速尝试 / Quick start**（[v0.2.7-rc.4 预发布版](https://github.com/Guuuu233/magpie-claude-tui-plugin/releases/tag/v0.2.7-rc.4)，需要自行检查账户条款和风险）：
+
+```sh
+magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7-rc.4
+magpie plugin login claude-tui
+```
+
+**重要限制 / Important:** 这是未经 Anthropic 和 Magpie 官方认可的实验性第三方实现。Magpie 上游[因自动化流量经交互式 TUI 运行的账户风险而拒绝了相关方案](https://github.com/yetone/magpie/pull/707)。使用个人 Claude 订阅向第三方 Agent 提供调用，可能不符合所适用的服务条款，并带来封号、限制或计费风险。**不能保证安全合规、账号不被限制，也不提供“翻倍额度”的承诺。** 如需正式授权的 SDK/API 集成，请使用 Anthropic 官方 API。
+
+[为什么关心 `-p` / SDK？](#为什么-p--sdk-用户关心它) · [实测数据与限制](#实测数据与限制) · [中文使用说明](#中文使用说明) · [English guide](#english-installation--security-guide) · [首次连接](FIRST_CONNECT.md) · [恢复机制](RECOVERY.md) · [宿主兼容性](HOST_COMPATIBILITY.md) · [更新记录](CHANGELOG.md)
 
 ## 中文使用说明
 
@@ -21,6 +36,21 @@ magpie-tui-doctor --plugins /path/to/plugins.json --runtime-dir /path/to/runtime
 其中 UID 应替换为实际运行 Magpie 的账号 UID。命令只检查本地配置和状态文件元数据，重点拦截重复启用的 `claude-tui` 插件、旧端口、错误文件所有者或权限；不会联网、修改配置或读取 OAuth。**托管模式使用自己的账号级运行时启动/就绪验证，外部 Runtime 预检命令不能代替该过程。**
 
 在 Magpie v0.1.1268 中，宿主可能让两个同名插件的请求头相互覆盖；此问题不能由第三方插件完整消除。候选采用“只允许单一启用实例 + 错误签名直接拒绝”的安全策略，不包含任何 Magpie 核心补丁。当前候选的源码、测试与发布说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+
+### 为什么 `-p` / SDK 用户关心它？
+
+常见的 `claude -p` 或 Claude Agent SDK 工作流是非交互式的。**本插件的差异是把符合 Magpie 接口的 Agent 请求交给真正处于交互模式的 Claude Code TUI 执行**，并用 Go Runtime 管理持久会话、流式输出和 MCP 工具结果续接，而不是声称通过修改模型或直接增加订阅配额。
+
+### 实测数据与限制
+
+| 对照维度 | 已观察到的情况 | 证据与边界 |
+| --- | --- | --- |
+| Claude Pro + Opus 5.5，单组工作负载 | 交互式 TUI 的 5 小时额度消耗 / API 等价工作量约比 headless `claude -p` 低 **44%～50%**，对应 **约 1.8～2× 使用效率** | [上游 PR #707 的历史测量](https://github.com/yetone/magpie/pull/707)；未完成严格控制变量、多账户、多模型重复实验 |
+| 长会话缓存连续性 | 原生会话丢失时可出现大量前缀重新写入；稳定续接更容易保留 cache read | 同一 PR 中有 `cache_read` / `cache_write` 样本，但**不能把全部差异简单归因为计费路径** |
+| SDK 与 `-p` 适用范围 | **通过 Magpie 兼容端点路由**的客户端可使用 TUI 后端 | 直接运行原版 `claude -p`、未配置 Magpie 的 Claude Agent SDK **不会自动获得此效果** |
+| 账户与平台限制 | 用户需自行评估条款、登录、网络和工具权限 | 上游拒绝交互式自动化方案；**不保证符合 Anthropic 订阅使用政策** |
+
+如果你准备复测“约 2 倍”，请固定模型、任务、提示词、缓存/冷启动条件、会话时长和五小时额度窗口，以同一组 API 等价输出量对比消耗百分比。单次结果不代表长期稳定收益，更不能据此外推出所有人都能获得两倍官方额度。
 
 ### 这是什么，能做什么？
 
@@ -76,7 +106,7 @@ magpie plugin login claude-tui
 
 ### 版本、更新与兼容性
 
-- **v0.2.7-rc.1 是未公开发布的候选，须通过独立源码或经过验证的 `.tgz` 包安装。** 不要把本地候选误当成仓库已经发布的 `v0.2.7` 正式标签。没有用户批准，不对正在工作的 Magpie 及 VPS 进行升级。
+- **v0.2.7-rc.4 已作为 GitHub Pre-release 发布**，建议固定对应标签或安装经过验证的 `.tgz` 包。它不是 `v0.2.7` 稳定版；GitHub 发布不会自动升级 VPS 或现有 Magpie，请勿在工具执行过程中强制切换。
 
 - **v0.2.6 修正 Claude TUI 额度读取**，优先读取账号实际的 5 小时与 7 天额度窗口，并保留无文件凭据 profile 的本机 CLI 回退。发布 GitHub 版本不会自动升级 VPS 上已安装的副本；需要在运行 Magpie 的主机更新插件，再刷新额度页。
 - **v0.2.4 修复 Claude Desktop `/compact` 将已结束的历史工具误当作待接续调用的问题**。在 Magpie 中更新插件，或明确安装 `magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.4`。其他 409/502 仍需按实际错误排查；固定旧版本的安装不会自动获得此修复。升级前应结束正在执行的工具、保留旧状态及回滚途径。
@@ -92,6 +122,8 @@ magpie plugin login claude-tui
 ## English installation & security guide
 
 ### Overview
+
+**Why `claude -p` / SDK users may care:** In one historical Claude Pro + Opus 5.5 comparison, the interactive bridge showed **~1.8–2× higher 5-hour quota efficiency per API-equivalent workload** than the headless `claude -p` path ([measurements and conditions](https://github.com/yetone/magpie/pull/707)). This is a *single-workload observation*, **not** a doubled plan limit, a guaranteed saving, or a validated billing rule. Session reuse and cache-write amplification are important confounders. The backend is useful only when the calling agent/SDK is configured to use the **Magpie-compatible endpoint**; installing it does not alter standalone `claude -p` or a direct Claude Agent SDK client.
 
 **Independent, experimental, not approved or reviewed by Magpie, Anthropic or the `magpie-community/plugins` maintainers.**
 
@@ -138,7 +170,7 @@ The existing **连接已登录 Claude** method remains available for advanced us
 
 **Available since v0.2.4:** Claude Desktop's dedicated `/compact` request is recognized and summarized in a separate native Claude Code CLI session. User/assistant turns and structured tool/image blocks are retained; a system prompt is included as labelled archival context. Historical tool calls remain transcript evidence; the summary request has no tools, so those calls are not re-executed. The original conversation checkpoint is not resumed or overwritten. The full source history, including tool content and images, is written to an additional JSONL session under the configured Claude profile and passes through that profile's Claude Code authentication path; it can remain under the CLI's normal session-retention behavior.
 
-**In the unreleased v0.2.7-rc.1 candidate:** Quota cards use the native `claude -p /usage` command by default even when the profile includes file-backed OAuth credentials. The former direct endpoint reader is available only with explicit `usageMode: "direct"` in an adapter configuration, with a separate 60-second cache; it never silently falls back to OAuth when native reading fails. Neither mode sends prompts or transcripts as part of usage reporting. Native CLI parsing failures are reported as errors, never fabricated zero utilization. This change is **not** present in the already published v0.2.6 package.
+**In the published v0.2.7-rc.4 pre-release:** Quota cards use the native `claude -p /usage` command by default even when the profile includes file-backed OAuth credentials. The former direct endpoint reader is available only with explicit `usageMode: "direct"` in an adapter configuration, with a separate 60-second cache; it never silently falls back to OAuth when native reading fails. Neither mode sends prompts or transcripts as part of usage reporting. Native CLI parsing failures are reported as errors, never fabricated zero utilization. The current pre-release also handles structured CLI quota results and avoids mistaking a count of 403 requests for an HTTP 403 authentication error.
 
 The bridge keeps a Claude Code process alive across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation, parallel tools and read-only recovery of certain interrupted conversations. Because the Desktop and CLI can reshape historic messages, some tool handoffs can still return HTTP 409 rather than risk executing a tool twice. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
 
