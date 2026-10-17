@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
 import { readClaudeUsage } from "./claude-usage.mjs";
 
 export const PROVIDER_ID = "claude-tui";
@@ -77,6 +78,31 @@ async function requireAuth(getAuth) {
 // never pass it and keep per-instance behaviour.
 export function createHooks(configuration, transport = globalThis.fetch, proofKey) {
   const { url, models } = normalizeConfig(configuration);
+  const portFile = configuration.runtimePortFile;
+  if (portFile !== undefined &&
+      (typeof portFile !== 'string' || !isAbsolute(portFile) || !portFile.endsWith('/port'))) {
+    throw new Error('runtimePortFile must be an absolute runtime port file path');
+  }
+  // A supervised Runtime chooses a new ephemeral loopback port on restart.
+  // The host retains its original provider API URL, but its plugin fetch
+  // must resolve the fresh, local-only port per request or it silently 502s.
+  // Only trust a private regular file owned by this process's UID. Never
+  // follow a final symlink and never fall back to the stale cached port.
+  const currentRuntimeURL = () => {
+    if (!portFile) return url;
+    const stat = lstatSync(portFile);
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) ||
+        (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
+      throw new Error('Claude TUI runtime port file must be private, regular and owned by the gateway user');
+    }
+    const raw = readFileSync(portFile, 'utf8').trim();
+    if (!/^[1-9][0-9]{0,4}$/.test(raw) || Number(raw) > 65535) {
+      throw new Error('Claude TUI runtime port file contains an invalid port');
+    }
+    const live = new URL(url);
+    live.port = raw;
+    return live;
+  };
   const key = proofKey ?? randomBytes(32);
   const usageProfileDir = configuration.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ??
     join(process.env.HOME || homedir(), ".claude");
@@ -106,6 +132,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
         return usageReader({
           profileDir: usageProfileDir,
           env: configuration.usageEnv ?? process.env,
+          usageMode: configuration.usageMode ?? 'native',
         });
       },
       async loader(getAuth) {
@@ -148,7 +175,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
               "x-bridge-session": session,
               "x-bridge-mac": mac(key, canonical),
             };
-            const response = await transport(new URL("messages", url).href, {
+            const response = await transport(new URL("messages", currentRuntimeURL()).href, {
               method: "POST", headers, body, signal: request.signal, redirect: "manual",
             });
             if (response.status >= 300 && response.status < 400) {

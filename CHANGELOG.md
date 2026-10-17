@@ -1,3 +1,20 @@
+## 0.2.7-rc.1 — standalone packaging of reliability fixes (unreleased)
+
+- Bundle the callback-disconnect fencing fix in the **plugin's own** Go Runtime: late or repeated client cancellation no longer detaches a newer client stream; preserve existing 90-minute interactive tool wait and never replay an external tool.
+- Default to native Claude Code `/usage`, with direct OAuth usage an explicit opt-in and isolated caches.
+- Ship the `magpie-tui-doctor` read-only deployment checker as part of the plugin package, catching duplicate adapters, stale runtime ports, incorrect file ownership and permissions, and symlinks.
+- Build all platform binaries from the plugin's included Runtime source and validate the `SHA256SUMS` manifest during `npm pack`.
+- Keep Go builds byte-reproducible across the commit/tag boundary with `-trimpath -buildvcs=false`; CI rebuilds and `cmp`s all eight macOS/Linux binary variants against those shipped in the repo.
+- Include an independent, signed loopback end-to-end test using the packaged Runtime and fake Claude (never a real login), enforced in branch/PR CI.
+- Add Race-checked fault injection for delayed/repeated cancellation versus new MCP handoff and process completion; run the existing native hard-kill, parallel-tool, auto-recovery and compaction tests together three times in PR CI. All use synthetic tools only.
+- Align the ephemeral native MCP server's timeout with the existing 90-minute parked callback lifetime: 80 minutes for a tool invocation, leaving a ten-minute buffer for native resolution and cleanup, rather than allowing an inner 30-minute timeout to orphan an otherwise live client tool result.
+- Verify the already-present `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` protection in the vendored Wrapper's actual tmux launch command. Claude Code v2.1.212+ otherwise backgrounds long MCP calls after two minutes, changing the synchronous callback protocol. This is a guard against future Wrapper regression, not a second Go-level override.
+- Test a complete signed plugin-to-Runtime MCP round trip with fake Claude: tool_use → native callback registration → matching tool_result → resumed response on the same run. Reject wrong tool IDs and replayed results; no real tools or accounts.
+- Harden manual releases: require `main` and an exact `package.json` version tag, never push generated binaries back to `main`, recheck source-to-binary reproducibility and offline integrations, and publish a complete npm `.tgz` plus its digest alongside the Runtime/Helper assets. Publishing still requires a separate manual workflow invocation.
+- Supervised external Runtime port discovery: optional `runtimePortFile` reads a private owner-only loopback port file for each signed request. A systemd restart can change the port without leaving Magpie's plugin stranded at the old URL. Invalid, symlinked or publicly accessible files fail closed; the existing endpoint/path/session signing contract remains unchanged.
+- Make the **outer client the sole automatic compaction authority** for authenticated, persisted interactive sessions: the plugin-owned Claude Code child receives `DISABLE_AUTO_COMPACT=1`, while standalone one-shot invocations retain native compaction. Explicit Desktop `/compact` still runs as a separate tool-free summarization helper. This prevents an independent native compaction from silently diverging from Desktop's visible summary; the native session still stores tool callback state and safely refuses unmatched historical continuations.
+- Add host-compatibility checks for Magpie v0.1.1268, and document that same-provider hook collisions cannot be eliminated solely within a third-party plugin.
+
 # Changelog
 
 ## 0.2.6 — accurate Claude quota windows

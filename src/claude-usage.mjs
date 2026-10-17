@@ -6,7 +6,11 @@ import { findExecutable, setupEnvironment } from "./first-connect.mjs";
 
 const usageLine = /^Current (session|week(?: \(([^)]+)\))?):\s*([0-9]+(?:\.[0-9]+)?)% used(?:\s*·\s*resets (.+))?$/;
 const ansi = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-const denied = /\b(401|403)\b|not (?:logged|signed) in|signed out|sign-in (?:has )?expired|unauthorized|forbidden|authentication (?:failed|required)|invalid (?:access )?token/i;
+// A bare number is not evidence of an authentication failure: native
+// Claude Code /usage also reports "Last 7d · 403 requests · 62 sessions".
+// Match an HTTP/error-status label when interpreting numeric 401/403, and
+// continue recognizing actual sign-in denial messages by their wording.
+const denied = /\b(?:http(?:\/[\d.]+)?|status(?:\s+code)?|error(?:\s+code)?|response(?:\s+code)?)\s*[:=#-]?\s*(?:401|403)\b|not (?:logged|signed) in|signed out|sign-in (?:has )?expired|unauthorized|forbidden|authentication (?:failed|required)|invalid (?:access )?token/i;
 const maxOutputBytes = 64 * 1024;
 const usageEndpoint = "https://api.anthropic.com/api/oauth/usage";
 const usageCacheTtlMs = 60_000;
@@ -133,9 +137,23 @@ function runUsageCommand(executable, profileDir, env, {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawnProcess(executable, ["-p", "/usage"], {
+      // The native /usage command is a local CLI command, not a regular
+      // model prompt. --output-format json returns a result envelope that
+      // reliably distinguishes a failed CLI run from a quota reading.
+      // Disable tools, settings and session persistence for this query;
+      // it must never resume or modify an interactive Desktop conversation.
+      const args = ["-p", "/usage", "--output-format", "json", "--tools", "",
+        "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"];
+      const childEnv = { ...env, CLAUDE_CONFIG_DIR: profileDir,
+        DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" };
+      // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 makes /usage use a
+      // cached reading (or no reading at all). Only this explicit quota
+      // refresh subprocess may contact Claude's official quota service.
+      // Never weaken normal inference/TUI session privacy settings.
+      delete childEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+      child = spawnProcess(executable, args, {
         cwd: env.HOME,
-        env: { ...env, CLAUDE_CONFIG_DIR: profileDir },
+        env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -177,7 +195,28 @@ function runUsageCommand(executable, profileDir, env, {
       clearTimeout(killTimer);
       if (failure) return reject(new Error(failure));
       if (code !== 0) return reject(new Error(`Claude Code /usage exited unsuccessfully${code === null ? ` (${signal ?? "unknown signal"})` : ` (code ${code})`}`));
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      const output = Buffer.concat(chunks).toString("utf8");
+      // Older Claude Code may still print plain-text quota lines. Support
+      // them, but unwrap and verify the modern structured result envelope.
+      const trimmed = output.trimStart();
+      if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+        resolve(output);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(output);
+        const result = Array.isArray(parsed)
+          ? parsed.findLast(item => item?.type === "result")
+          : parsed;
+        if (!result || result.type !== "result" || result.is_error ||
+            typeof result.result !== "string") {
+          reject(new Error("Claude Code /usage returned no successful quota result"));
+          return;
+        }
+        resolve(result.result);
+      } catch {
+        reject(new Error("Claude Code /usage returned invalid structured output"));
+      }
     });
   });
 }
@@ -286,11 +325,17 @@ async function readUsageFromEndpoint(accessToken, { fetchImpl = globalThis.fetch
   return { windows: apiUsageWindows(payload) };
 }
 
-async function readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl }) {
-  const token = await readProfileAccessToken(profileDir);
-  if (token) return readUsageFromEndpoint(token, { fetchImpl, timeoutMs });
+async function readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode }) {
+  if (usageMode === 'direct') {
+    const token = await readProfileAccessToken(profileDir);
+    if (!token) throw new Error('Explicit direct quota mode requires a readable profile OAuth token');
+    return readUsageFromEndpoint(token, { fetchImpl, timeoutMs });
+  }
+  if (usageMode !== 'native') throw new Error('Unknown Claude usage mode');
 
-  // macOS Keychain-backed profiles may not expose OAuth credentials in this file.
+  // Default to the official Claude Code /usage behavior on every platform.
+  // Merely having an OAuth token in the profile is not authorization for
+  // this plugin to issue its own direct usage requests.
   const home = env.HOME || homedir();
   const cliEnv = setupEnvironment(env, home);
   let executable = command;
@@ -306,11 +351,14 @@ export async function readClaudeUsage({
   spawnProcess,
   timeoutMs,
   fetchImpl,
+  usageMode = 'native',
 } = {}) {
   if (typeof profileDir !== "string" || !isAbsolute(profileDir)) {
     return { windows: [], error: "Claude profile directory must be an absolute path" };
   }
-  const key = resolve(profileDir);
+  // Different transports are not interchangeable caches: one may be stale
+  // or unavailable while the other has an independently sourced reading.
+  const key = resolve(profileDir) + '\0' + usageMode;
   const cached = usageCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     return { windows: cached.windows.map(window => ({ ...window })) };
@@ -326,7 +374,7 @@ export async function readClaudeUsage({
     }
   }
 
-  const request = readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl })
+  const request = readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode })
     .then(value => {
       const safeValue = { windows: value.windows.map(window => ({ ...window })) };
       usageCache.set(key, { expiresAt: Date.now() + usageCacheTtlMs, windows: safeValue.windows });

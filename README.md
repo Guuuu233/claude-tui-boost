@@ -6,6 +6,22 @@
 
 ## 中文使用说明
 
+### v0.2.7-rc.4 独立插件预发布版
+
+外部 systemd 管理 Runtime 时，推荐在插件 `options` 中保留 `runtimeURL`，同时添加 `runtimePortFile`，例如 `"runtimePortFile": "/home/magpie/.config/magpie-tui-runtime-production/port"`。插件会在每次请求时读取仅服务用户可访问的端口文件，从而在 Runtime 重启改变端口后自动恢复，避免网关静态 URL 漂移导致的 502。该选项只允许本机回环端口，不允许指向其他主机；托管模式无需配置它。
+
+当前候选将近期审计修复直接纳入**本插件及随包的 Go Runtime**，无需编辑或重新编译 Magpie 本体。包含客户端断线时保留原工具回调、跨请求取消隔离、默认由原生 Claude Code `/usage` 读取额度，以及随包提供的只读预检命令 `magpie-tui-doctor`。该版本尚未在真实 Claude Desktop 长会话上做生产验收，不应无条件替换正在工作的生产版本。
+
+有显式外部 Runtime 配置的服务可在升级前运行：
+
+```sh
+magpie-tui-doctor --plugins /path/to/plugins.json --runtime-dir /path/to/runtime-state --service-uid 1001
+```
+
+其中 UID 应替换为实际运行 Magpie 的账号 UID。命令只检查本地配置和状态文件元数据，重点拦截重复启用的 `claude-tui` 插件、旧端口、错误文件所有者或权限；不会联网、修改配置或读取 OAuth。**托管模式使用自己的账号级运行时启动/就绪验证，外部 Runtime 预检命令不能代替该过程。**
+
+在 Magpie v0.1.1268 中，宿主可能让两个同名插件的请求头相互覆盖；此问题不能由第三方插件完整消除。候选采用“只允许单一启用实例 + 错误签名直接拒绝”的安全策略，不包含任何 Magpie 核心补丁。当前候选的源码、测试与发布说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+
 ### 这是什么，能做什么？
 
 这是一个独立发布的 Magpie 插件（Provider ID：`claude-tui`），使用**官方 Claude Code 已登录的交互式 TUI**作为推理后端，而不是 Anthropic API。插件附带 Go Runtime、MCP Helper 和 Bun/tmux Wrapper，使 Magpie/OpenCode 的模型请求通过原生 CLI 处理，再把 MCP 工具调用交回调用方。
@@ -53,12 +69,14 @@ magpie plugin login claude-tui
 - 动态历史内容：在 `main` 当前源码中，只有**严格匹配**的 token 余额提示可以在旧用户消息的独立文本块被删除时忽略；其他用户指令、工具参数和普通提醒依然严格校验。
 - 受控只读恢复（v0.2.3）：`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1` **默认关闭**。只有活跃的原始工具回调、完全匹配的会话与模型、安全设置、已标记 Dirty 的持久化 checkpoint 等条件全部满足，才允许终止失配进程并启动一次**禁用工具的只读恢复轮次**。不会重新执行已经完成的修改，也不能复活此前已死亡的 MCP 回调。
 - Claude Desktop `/compact`（v0.2.4）：识别专用压缩请求，将用户/助手消息及历史工具调用、结果和图片写入独立 Claude Code CLI 会话；系统提示作为标注过的历史背景。摘要轮禁用工具，历史工具不会重新执行，原会话 checkpoint 不会被替换。摘要内容会经过已配置的 Claude Code 登录路径；隔离 transcript 会额外保存在该 Claude profile 的会话目录中，遵循 CLI 的会话保留行为。
-- Claude 额度卡（v0.2.6）：对于可读取 `.credentials.json` 的账号，插件从所选 Claude profile 读取 OAuth **access token**，通过无请求正文的 HTTPS `GET` 向 `api.anthropic.com/api/oauth/usage` 读取 5 小时、7 天及可用的模型额度窗口。不会发送提示词、对话记录或 refresh token，不记录或返回 access token，也不会自动刷新 OAuth 凭据。成功结果仅在当前插件进程内缓存 60 秒，Magpie 仍可使用自己的额度缓存。若凭据由 macOS Keychain 等机制保存而不在该文件中，保留本机 `claude -p /usage` 回退；托管账号仍按各自 profile 查询。该 OAuth 额度路径没有公开的稳定接口文档，Anthropic 可能调整或限流；认证或解析失败会显示错误，不伪造为 0%。
+- Claude 额度卡（v0.2.7-rc.1）：默认由所选 profile 对应的**原生 Claude Code CLI** 执行 `claude -p /usage`，不因发现 `.credentials.json` 中的 OAuth access token 而自行直连额度接口。旧的 HTTPS 额度读取仅在明确配置 `usageMode: "direct"` 时启用，两条路径有相互隔离的 60 秒缓存。额度读取失败返回错误，不伪造 0%；不会在失败时自动切换为直接 OAuth。托管账号始终按各自 profile 查询。
 - 旧会话的定向迁移需要私有证书与人工核查，不会作为普通插件安装功能开放。更完整的机制、其他开关、限制及拒绝场景见 [RECOVERY.md](RECOVERY.md)。
 
 **托管安装配置**：六个经过明确允许的恢复环境变量只能取 `0` 或 `1`，且要在**Magpie 宿主服务启动环境**中设置，再在空闲时重新加载插件。仅在本机 Desktop 或终端设置变量，不能改变另一台 VPS 上的 Magpie 进程。不要为了追求“无感恢复”而一次性启用全部开关。生产环境是否启用，以及测试通过与否，不能从 GitHub 源码默认值直接推断。
 
 ### 版本、更新与兼容性
+
+- **v0.2.7-rc.1 是未公开发布的候选，须通过独立源码或经过验证的 `.tgz` 包安装。** 不要把本地候选误当成仓库已经发布的 `v0.2.7` 正式标签。没有用户批准，不对正在工作的 Magpie 及 VPS 进行升级。
 
 - **v0.2.6 修正 Claude TUI 额度读取**，优先读取账号实际的 5 小时与 7 天额度窗口，并保留无文件凭据 profile 的本机 CLI 回退。发布 GitHub 版本不会自动升级 VPS 上已安装的副本；需要在运行 Magpie 的主机更新插件，再刷新额度页。
 - **v0.2.4 修复 Claude Desktop `/compact` 将已结束的历史工具误当作待接续调用的问题**。在 Magpie 中更新插件，或明确安装 `magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.4`。其他 409/502 仍需按实际错误排查；固定旧版本的安装不会自动获得此修复。升级前应结束正在执行的工具、保留旧状态及回滚途径。
@@ -120,7 +138,7 @@ The existing **连接已登录 Claude** method remains available for advanced us
 
 **Available since v0.2.4:** Claude Desktop's dedicated `/compact` request is recognized and summarized in a separate native Claude Code CLI session. User/assistant turns and structured tool/image blocks are retained; a system prompt is included as labelled archival context. Historical tool calls remain transcript evidence; the summary request has no tools, so those calls are not re-executed. The original conversation checkpoint is not resumed or overwritten. The full source history, including tool content and images, is written to an additional JSONL session under the configured Claude profile and passes through that profile's Claude Code authentication path; it can remain under the CLI's normal session-retention behavior.
 
-**Available since v0.2.6:** For profiles with file-backed credentials, the plugin reads the OAuth **access token** from the selected profile and makes a body-free HTTPS `GET` to `api.anthropic.com/api/oauth/usage` for the current 5-hour, 7-day and available model windows. It sends no prompt, conversation transcript or refresh token, never logs or returns the access token, and does not refresh OAuth credentials. Successful results are cached in process memory for 60 seconds; Magpie can also apply its own quota cache. Profiles whose credentials are not available in `.credentials.json` retain the local `claude -p /usage` fallback. This OAuth quota route has no public stability documentation and may change or rate-limit requests; authentication and parsing failures remain errors rather than invented zero usage.
+**In the unreleased v0.2.7-rc.1 candidate:** Quota cards use the native `claude -p /usage` command by default even when the profile includes file-backed OAuth credentials. The former direct endpoint reader is available only with explicit `usageMode: "direct"` in an adapter configuration, with a separate 60-second cache; it never silently falls back to OAuth when native reading fails. Neither mode sends prompts or transcripts as part of usage reporting. Native CLI parsing failures are reported as errors, never fabricated zero utilization. This change is **not** present in the already published v0.2.6 package.
 
 The bridge keeps a Claude Code process alive across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation, parallel tools and read-only recovery of certain interrupted conversations. Because the Desktop and CLI can reshape historic messages, some tool handoffs can still return HTTP 409 rather than risk executing a tool twice. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
 

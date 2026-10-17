@@ -119,6 +119,12 @@ test('foreign tmux identity is refused without operating the foreign session', a
   const a = await sandbox(t), b = await sandbox(t); if (!a || !b) return;
   await Promise.all([startRemote(a.configPath, { env: a.env }), startRemote(b.configPath, { env: b.env })]);
   await until(() => remoteStatus(a.configPath, { env: a.env }), s => s.phase === 'waiting_authorization');
+  // The two isolated tmux sessions start asynchronously. On a slower CI
+  // runner, B can still be in "preparing" even when A is ready. Do not
+  // confuse that harmless startup race with a failure of foreign-session
+  // isolation: prove B reached its own authorization state before writing
+  // a forged A identity, then assert it stays there afterward.
+  await until(() => remoteStatus(b.configPath, { env: b.env }), s => s.phase === 'waiting_authorization');
   const path = join(dirname(a.configPath), 'remote.json'); const original = await readFile(path, 'utf8');
   const foreign = JSON.parse(await readFile(join(dirname(b.configPath), 'remote.json'), 'utf8')); foreign.owner = JSON.parse(original).owner;
   try {

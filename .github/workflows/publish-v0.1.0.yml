@@ -1,113 +1,154 @@
-name: Build and publish third-party binaries
+name: Release complete standalone Claude TUI plugin
 
+# Deliberately manual. This workflow never pushes a branch, modifies main,
+# deploys a runtime, or uses a production Claude account.
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Semver tag to create (e.g. v0.1.1)'
+        description: 'Exact published package version (example: v0.2.7-rc.1)'
         required: true
         type: string
-        default: v0.2.6
+        default: v0.2.7-rc.4
 
 permissions:
   contents: write
 
+concurrency:
+  group: standalone-plugin-release
+  cancel-in-progress: false
+
 jobs:
   publish:
-    name: Verify, build, commit and release
+    name: Verify tagged source and publish complete installable archive
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
+    env:
+      CGO_ENABLED: '0'
+      ANTHROPIC_API_KEY: ''
+      ANTHROPIC_AUTH_TOKEN: ''
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
-      - name: Install tmux for isolated SSH-login tests
-        run: sudo apt-get update && sudo apt-get install -y tmux
-      - name: Load verified Magpie host for mandatory compatibility checks
-        uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: runtime/go.mod
+      - name: Fail closed on wrong ref, release tag, or existing release
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main' || {
+            echo 'Release requires merged main; PR branches cannot be released.' >&2; exit 2;
+          }
+          node -e 'const p=require("./package.json"); if(process.argv[1] !== "v"+p.version) process.exit(2)' "$RELEASE_TAG" || {
+            echo 'Release tag must exactly match package.json; change/merge the version first.' >&2; exit 2;
+          }
+          git fetch --no-tags --depth=1 origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" || {
+            echo 'Checked out source is not the exact latest main commit.' >&2; exit 2;
+          }
+          if git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | grep -q .; then
+            echo 'Release tag already exists; refusing mutation.' >&2; exit 2;
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing mutation.' >&2; exit 2;
+          fi
+      - name: Install offline synthetic CLI and PTY tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          mkdir -p "$RUNNER_TEMP/offline-claude"
+          cat > "$RUNNER_TEMP/offline-claude/claude" <<'STUB'
+          #!/usr/bin/env sh
+          if [ "${1:-}" = '--version' ]; then echo '2.1.300 (isolated CLI probe)'; exit 0; fi
+          echo 'Real Claude model requests are forbidden in release CI' >&2
+          exit 93
+          STUB
+          chmod 700 "$RUNNER_TEMP/offline-claude/claude"
+          echo "$RUNNER_TEMP/offline-claude" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
         with:
           repository: yetone/magpie
-          ref: 95e7c6bcc07629897f6703c31eaef477fcee4a13
+          ref: 63be47717a9ca91fc89102078a1f1fff3e03e0ce
           path: .compat-host
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /internal/plugin/host.js
             /LICENSE
-      - name: Verify plugin and isolated first-connect tests
+      - name: Verify unmodified host integration and real package tests
         env:
           MAGPIE_TUI_TEST_HOST: ${{ github.workspace }}/.compat-host/internal/plugin/host.js
         run: bun test
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
-          cache-dependency-path: runtime/go.mod
-      - name: Provide non-inferencing Claude CLI stub for integration tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/claude-stub-bin"
-          cat > "$RUNNER_TEMP/claude-stub-bin/claude" <<'STUB'
-          #!/usr/bin/env sh
-          if [ "${1:-}" = "--version" ]; then
-            printf '%s\n' '2.1.296 (Claude Code test stub)'
-            exit 0
-          fi
-          echo 'refusing real Claude calls in offline CI' >&2
-          exit 93
-          STUB
-          chmod 700 "$RUNNER_TEMP/claude-stub-bin/claude"
-          echo "$RUNNER_TEMP/claude-stub-bin" >> "$GITHUB_PATH"
-      - name: Verify tests and Go static analysis
+      - name: Race test and vet included Go Runtime
         working-directory: runtime
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go test -race -p 2 ./... -count=1 -timeout=240s
+          go vet -p 2 ./...
+      - name: Verify all eight binaries reproduce byte for byte
         shell: bash
         run: |
           set -euo pipefail
-          go test ./... -count=1 -timeout=150s
-          go vet ./...
-      - name: Build binaries directly from published sources
-        shell: bash
-        run: |
-          set -euo pipefail
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
           for os in darwin linux; do
             for arch in arm64 amd64; do
-              for name in magpie-tui-runtime magpie-tui-mcp-helper; do
-                (cd runtime && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -o "../bin/$name.$os-$arch" "./cmd/$name")
+              for kind in magpie-tui-runtime magpie-tui-mcp-helper; do
+                (cd runtime && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                  go build -trimpath -buildvcs=false -o "$dir/$kind.$os-$arch" "./cmd/$kind")
+                cmp "$dir/$kind.$os-$arch" "bin/$kind.$os-$arch" || {
+                  echo "Binary differs from source: $kind.$os-$arch" >&2; exit 3;
+                }
               done
             done
           done
-          sha256sum bin/magpie-tui-* > SHA256SUMS
-          sha256sum -c SHA256SUMS
-      - name: Publish exact binary source commit
+          node scripts/verify-package-assets.mjs
+      - name: Build and unpack exactly the plugin being released
         shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bin/ SHA256SUMS
-          if ! git diff --cached --quiet; then
-            git commit -m "Build $RELEASE_TAG runtime/helper binaries from source"
-            git push origin HEAD:main
-          fi
-      - name: Tag and publish release
-        shell: bash
+          mkdir -p "$RUNNER_TEMP/plugin-release"
+          npm pack --silent --pack-destination "$RUNNER_TEMP/plugin-release"
+          name="$(node -p 'const p=require("./package.json"); `${p.name}-${p.version}.tgz`')"
+          test -s "$RUNNER_TEMP/plugin-release/$name"
+          tar -xzf "$RUNNER_TEMP/plugin-release/$name" -C "$RUNNER_TEMP/plugin-release"
+          node "$RUNNER_TEMP/plugin-release/package/scripts/verify-package-assets.mjs"
+          test -s "$RUNNER_TEMP/plugin-release/package/scripts/magpie-tui-doctor.mjs"
+          test -s "$RUNNER_TEMP/plugin-release/package/RELEASE_NOTES.md"
+          (cd "$RUNNER_TEMP/plugin-release" && sha256sum "$name" > PLUGIN_SHA256SUMS)
+          # .compat-host is an intentionally untracked, isolated upstream
+          # fixture. Only tracked source modifications are forbidden here.
+          git diff --quiet && git diff --cached --quiet || {
+            echo 'Release verification unexpectedly modified tracked source.' >&2; exit 2;
+          }
+      - name: Create release with full plugin tarball and binary checksums
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag'; exit 2; }
-          if ! git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | grep -q .; then
-            git tag -a "$RELEASE_TAG" -m "Independent third-party $RELEASE_TAG release"
-            git push origin "$RELEASE_TAG"
-          fi
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" bin/magpie-tui-runtime.* bin/magpie-tui-mcp-helper.* SHA256SUMS \
-              --title "$RELEASE_TAG — experimental unofficial Claude TUI provider" \
-              --notes-file RELEASE_NOTES.md
-          fi
+          name="$(node -p 'const p=require("./package.json"); `${p.name}-${p.version}.tgz`')"
+          dir="$RUNNER_TEMP/plugin-release"
+          options=(--target "$GITHUB_SHA" --title "$RELEASE_TAG — standalone Claude TUI plugin" --notes-file RELEASE_NOTES.md)
+          if [[ "$RELEASE_TAG" == *-* ]]; then options+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" \
+            "$dir/$name" "$dir/PLUGIN_SHA256SUMS" \
+            bin/magpie-tui-runtime.* bin/magpie-tui-mcp-helper.* SHA256SUMS \
+            "${options[@]}"

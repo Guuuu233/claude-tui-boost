@@ -29,12 +29,14 @@ import (
 
 const interactiveBridgeEnv = "MAGPIE_CLAUDE_INTERACTIVE_BRIDGE"
 
-// Claude Code can abort an otherwise healthy MCP call after five minutes
-// without progress, severing the pending tool_result and turning Desktop's
-// later continuation into a 409. The Magpie MCP server only receives a
-// response when the client completes its tool, so allow long local builds.
-// The setting is scoped to this ephemeral MCP server, not to user servers.
-const interactiveMCPToolTimeoutMS = 30 * 60 * 1000
+// The native MCP callback is parked for up to 90 minutes while Desktop runs
+// external work, but Claude Code also applies its own per-MCP call timeout.
+// If the latter expires first (previously 30m), the native waiter disappears
+// and the tool_result arrives as a 409 even though Runtime retained the run.
+// Allow long builds, leave ten minutes for resolution/cleanup before the
+// 90-minute parked deadline, and scope this to our ephemeral MCP server only.
+// Do not disable the MCP timeout: abandoned work must remain bounded.
+const interactiveMCPToolTimeoutMS = 80 * 60 * 1000
 
 func interactiveMCPConfig(helperExe string, helperArgv []string, callback, toolsPath string) string {
 	config, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
@@ -1368,7 +1370,13 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 		// a second Runtime from dirtying another process's clean result.
 		b.markInteractiveSessionDirty(owner, outerSession)
 	}
-	env := envWithProxy(claudeProxy(ctx), interactiveClaudeEnv(os.Environ()))
+	// Desktop (and any client providing a stable outer session) owns its
+	// conversation and issues its own /compact. The private native Claude Code
+	// session is only a tool executor for that conversation. Letting it compact
+	// independently creates an invisible second history that can diverge from
+	// the client's summarized transcript. Independent one-shot CLI invocations
+	// without a client session retain their native auto-compaction behavior.
+	env := envWithProxy(claudeProxy(ctx), interactiveClaudeEnv(os.Environ(), outerSession != "" || readOnly))
 	env = append(env, "CLAUDE_BRIDGE_USER_CONTEXT_PATH="+filepath.Join(tmp, "user-context.json"))
 	if nativeLease != nil && os.Getenv("MAGPIE_CLAUDE_NATIVE_TMUX_GUARD") == "1" {
 		// The wrapper fsyncs the marker before creating its tmux session.
@@ -1837,9 +1845,13 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 	pmu.Unlock()
 }
 
-// The interactive transport resumes native sessions and lets Claude Code
-// manage their context. Headless replay semantics retain their existing env.
-func interactiveClaudeEnv(env []string) []string {
+// The external client is the sole compaction authority for a persisted
+// session or a client-requested compaction helper. The native CLI still
+// maintains its own history for MCP callback continuity, but must not
+// independently summarize it and invalidate the outer client's checkpoint.
+// Tool-free one-shot sessions without an outer client keep their native
+// automatic compaction enabled; headless claude -p keeps its prior policy.
+func interactiveClaudeEnv(env []string, clientOwnsContext bool) []string {
 	clean := cleanClaudeEnv(env)
 	kept := clean[:0]
 	for _, entry := range clean {
@@ -1847,6 +1859,9 @@ func interactiveClaudeEnv(env []string) []string {
 		if key != "DISABLE_AUTO_COMPACT" {
 			kept = append(kept, entry)
 		}
+	}
+	if clientOwnsContext {
+		return append(kept, "DISABLE_AUTO_COMPACT=1")
 	}
 	return kept
 }
