@@ -6,7 +6,11 @@ import { findExecutable, setupEnvironment } from "./first-connect.mjs";
 
 const usageLine = /^Current (session|week(?: \(([^)]+)\))?):\s*([0-9]+(?:\.[0-9]+)?)% used(?:\s*·\s*resets (.+))?$/;
 const ansi = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-const denied = /\b(401|403)\b|not (?:logged|signed) in|signed out|sign-in (?:has )?expired|unauthorized|forbidden|authentication (?:failed|required)|invalid (?:access )?token/i;
+// A bare number is not evidence of an authentication failure: native
+// Claude Code /usage also reports "Last 7d · 403 requests · 62 sessions".
+// Match an HTTP/error-status label when interpreting numeric 401/403, and
+// continue recognizing actual sign-in denial messages by their wording.
+const denied = /\b(?:http(?:\/[\d.]+)?|status(?:\s+code)?|error(?:\s+code)?|response(?:\s+code)?)\s*[:=#-]?\s*(?:401|403)\b|not (?:logged|signed) in|signed out|sign-in (?:has )?expired|unauthorized|forbidden|authentication (?:failed|required)|invalid (?:access )?token/i;
 const maxOutputBytes = 64 * 1024;
 const usageEndpoint = "https://api.anthropic.com/api/oauth/usage";
 const usageCacheTtlMs = 60_000;

@@ -28,6 +28,20 @@ test("refuses output without a readable quota instead of inventing zero usage", 
     .toThrow(/signed in/i);
 });
 
+test("request counts of 401 or 403 are not mistaken for rejected OAuth", () => {
+  for (const count of [401, 403]) {
+    const raw = [
+      "Current session: 36% used · resets Oct 17 at 2:40pm (UTC)",
+      "Current week (all models): 26% used · resets Oct 20 at 2am (UTC)",
+      `Last 7d · ${count} requests · 62 sessions`,
+    ].join("\n");
+    expect(parseClaudeUsage(raw).windows.map(x => x.used)).toEqual([36, 26]);
+  }
+  for (const failure of ["HTTP 403 Forbidden", "status code 401", "Error: 403", "not signed in", "Unauthorized"]) {
+    expect(() => parseClaudeUsage(`Current session: 36% used\n${failure}`)).toThrow(/signed in|refused/i);
+  }
+});
+
 test("explicit direct quota mode reads selected profile without sending prompt data", async () => {
   const home = mkdtempSync(join(tmpdir(), "magpie-usage-api-test-"));
   const profile = join(home, "profile");
