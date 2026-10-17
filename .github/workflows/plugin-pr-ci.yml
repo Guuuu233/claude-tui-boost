@@ -107,7 +107,8 @@ jobs:
           dir="$(mktemp -d)"
           trap 'rm -rf "$dir"' EXIT
           npm pack --silent --pack-destination "$dir"
-          tar -xzf "$dir/magpie-claude-tui-plugin-0.2.7-rc.1.tgz" -C "$dir"
+          name="$(node -p 'const p=require("./package.json"); `${p.name}-${p.version}.tgz`')"
+          tar -xzf "$dir/$name" -C "$dir"
           node "$dir/package/scripts/verify-package-assets.mjs"
           test -f "$dir/package/scripts/magpie-tui-doctor.mjs"
           test -f "$dir/package/RELEASE_NOTES.md"
