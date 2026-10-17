@@ -1,6 +1,8 @@
-# v0.2.7-rc.4 — native Claude quota accuracy and reliability candidate
+# v0.2.7 — native Claude quota accuracy and interactive bridge reliability
 
-This is an **experimental pre-release** of the standalone `magpie-claude-tui-plugin` package (including its bundled Go Runtime), not a stable release. All changes belong to this distributable plugin; upgrading does not require editing Magpie application source. **Installing a GitHub Release does not automatically deploy it to existing VPS services.**
+This is the **non-prerelease v0.2.7** of the standalone `magpie-claude-tui-plugin`, promoted from the tested `v0.2.7-rc.4` candidate without additional Runtime behavior changes. It remains an **unofficial experimental third-party integration**, not a claim that all clients, recovery paths or subscription use cases have been certified. No Magpie source modification is required. **A GitHub Release does not automatically upgrade existing VPS installations.**
+
+The candidate's release checks passed, including offline plugin/MCP integration, Go race tests, packaged-binary/source verification and tarball checks. Real-Claude acceptance on the GTT and NTT VPS deployments is described below. Long real Desktop `/compact`, hard-kill recovery of existing user sessions and a full 80-minute tool wait remain outside the verified scope.
 
 - Native Claude Code `/usage` is the default quota source. Direct OAuth usage calls require an explicit `usageMode: "direct"` option and have a separate cache. No silent fallback to direct OAuth.
 - **Quota refresh repair:** native `/usage` now runs with `--output-format json --tools "" --strict-mcp-config --setting-sources "" --no-session-persistence` and parses the authenticated CLI result envelope instead of expecting plaintext at the top level. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is dropped **only from the ephemeral quota-query subprocess** so a VPS service with strict inference privacy can retrieve up-to-date quota windows; `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and `DISABLE_AUTOUPDATER` remain set. No ordinary Claude conversation, Desktop transcript, login or runtime is changed by reading quota. An unreadable result still fails closed instead of displaying fabricated zero usage.
@@ -18,14 +20,14 @@ This is an **experimental pre-release** of the standalone `magpie-claude-tui-plu
 
 **Known host limitation:** Magpie v0.1.1268 invokes hooks from all installed plugins. Two enabled plugins claiming `claude-tui` can still overwrite each other's `x-g3-hook-*` headers in the host. A third-party plugin cannot guarantee host-wide hook isolation. The provider's fetch refuses an invalid proof, and the packaged doctor detects duplicate installs, but a separate upstream host fix is needed to make arbitrary cross-plugin hook interference impossible. **No Magpie core patch is included in this package.**
 
-Deployment status (as of 2026-10-17): this candidate was **manually deployed and verified on both GTT and NTT VPS production runtimes**, preserving original states/keys and independent rollback copies. Tested with real Claude subscriptions: signed model response, live MCP continuation, 550 KiB synthetic archival compaction, 130-second tool-result delay, runtime port-drift recovery, and live 5h/7d quota parsing with a 403-request counter. The user's local Mac application and existing Claude Desktop sessions were **not** upgraded. These tests do **not** certify a real 500k-token Desktop `/compact`, hard-kill recovery of a real user session, or a complete 80-minute tool wait. Old orphan tool callbacks continue to fail closed.
+Deployment status (as of 2026-10-17): the rc.4 candidate was **manually deployed and verified on both GTT and NTT VPS production runtimes**, preserving original states/keys and independent rollback copies. Tested with real Claude subscriptions: signed model response, live MCP continuation, 550 KiB synthetic archival compaction, 130-second tool-result delay, runtime port-drift recovery, and live 5h/7d quota parsing with a 403-request counter. The user's local Mac application and existing Claude Desktop sessions were **not** upgraded. These tests do **not** certify a real 500k-token Desktop `/compact`, hard-kill recovery of a real user session, or a complete 80-minute tool wait. Old orphan tool callbacks continue to fail closed.
 
 ## Installation
 
 Use the installable archive attached to this release or install the matching GitHub tag through Magpie's plugin manager:
 
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7-rc.4
+magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7
 ```
 
 If upgrading a systemd-managed runtime, preserve the existing session/key state and update both the plugin spec and the Runtime executable path to the **same** packaged version. Do not restart while real Claude tools are active. Retire old post-start scripts that re-register a prior plugin; ensure exactly one enabled `claude-tui` provider. The archive includes `magpie-tui-doctor` for a read-only preflight.
