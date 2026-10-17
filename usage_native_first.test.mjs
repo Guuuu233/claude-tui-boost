@@ -40,7 +40,10 @@ test('default usage follows the native Claude Code CLI even if a profile has an 
   assert.equal(result.error, undefined);
   assert.deepEqual(result.windows.map(x => [x.name, x.used]), [['5 hours', 10], ['7 days', 21]]);
   assert.equal(started.length, 1);
-  assert.deepEqual(started[0].args, ['-p', '/usage']);
+  assert.deepEqual(started[0].args, [
+    '-p', '/usage', '--output-format', 'json', '--tools', '',
+    '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence',
+  ]);
   assert.equal(started[0].options.env.CLAUDE_CONFIG_DIR, profile);
   assert.equal(directRequests, 0, 'no OAuth access token should be sent directly by default');
 });

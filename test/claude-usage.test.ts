@@ -142,6 +142,41 @@ printf '%s\\n' 'Current session: 14% used' 'Current week (all models): 6% used'
   }
 });
 
+test("native quota refresh strips the traffic gate only from isolated /usage and accepts structured results", async () => {
+  const home = mkdtempSync(join(tmpdir(), "magpie-quota-native-env-"));
+  const bin = join(home, "bin");
+  mkdirSync(bin);
+  const profile = join(home, "profile");
+  mkdirSync(profile);
+  const claude = join(bin, "claude");
+  const output = JSON.stringify({ type: "result", is_error: false,
+    result: "Current session: 37% used · resets Oct 16 at 10:30pm (Asia/Taipei)\nCurrent week (all models): 82% used" });
+  writeFileSync(claude, `#!/bin/sh
+test "$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" = "" || exit 70
+test "$DISABLE_TELEMETRY" = 1 || exit 71
+test "$DISABLE_ERROR_REPORTING" = 1 || exit 72
+test "$DISABLE_AUTOUPDATER" = 1 || exit 73
+test "$CLAUDE_CONFIG_DIR" = "$HOME/profile" || exit 74
+test "$1" = -p && test "$2" = /usage || exit 75
+test "$3" = --output-format && test "$4" = json || exit 76
+test "$5" = --tools && test "$6" = "" || exit 77
+test "$7" = --strict-mcp-config && test "$8" = --setting-sources && test "$9" = "" || exit 78
+test "\${10}" = --no-session-persistence || exit 79
+printf '%s\\n' '${output.replaceAll("'", "'\\''")}'
+`, { mode: 0o700 });
+  try {
+    const incomingEnv = { HOME: home, PATH: bin,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "0" };
+    const result = await readClaudeUsage({ profileDir: profile, env: incomingEnv });
+    expect(result.error).toBeUndefined();
+    expect(result.windows.map(({ used }) => used)).toEqual([37, 82]);
+    expect(incomingEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect(incomingEnv.DISABLE_TELEMETRY).toBe("0");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("exposes usage through the explicit provider auth hook", async () => {
   const profile = "/srv/magpie/claude-profile";
   const hooks = createHooks({

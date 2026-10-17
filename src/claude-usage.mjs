@@ -133,9 +133,23 @@ function runUsageCommand(executable, profileDir, env, {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawnProcess(executable, ["-p", "/usage"], {
+      // The native /usage command is a local CLI command, not a regular
+      // model prompt. --output-format json returns a result envelope that
+      // reliably distinguishes a failed CLI run from a quota reading.
+      // Disable tools, settings and session persistence for this query;
+      // it must never resume or modify an interactive Desktop conversation.
+      const args = ["-p", "/usage", "--output-format", "json", "--tools", "",
+        "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"];
+      const childEnv = { ...env, CLAUDE_CONFIG_DIR: profileDir,
+        DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" };
+      // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 makes /usage use a
+      // cached reading (or no reading at all). Only this explicit quota
+      // refresh subprocess may contact Claude's official quota service.
+      // Never weaken normal inference/TUI session privacy settings.
+      delete childEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+      child = spawnProcess(executable, args, {
         cwd: env.HOME,
-        env: { ...env, CLAUDE_CONFIG_DIR: profileDir },
+        env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -177,7 +191,28 @@ function runUsageCommand(executable, profileDir, env, {
       clearTimeout(killTimer);
       if (failure) return reject(new Error(failure));
       if (code !== 0) return reject(new Error(`Claude Code /usage exited unsuccessfully${code === null ? ` (${signal ?? "unknown signal"})` : ` (code ${code})`}`));
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      const output = Buffer.concat(chunks).toString("utf8");
+      // Older Claude Code may still print plain-text quota lines. Support
+      // them, but unwrap and verify the modern structured result envelope.
+      const trimmed = output.trimStart();
+      if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+        resolve(output);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(output);
+        const result = Array.isArray(parsed)
+          ? parsed.findLast(item => item?.type === "result")
+          : parsed;
+        if (!result || result.type !== "result" || result.is_error ||
+            typeof result.result !== "string") {
+          reject(new Error("Claude Code /usage returned no successful quota result"));
+          return;
+        }
+        resolve(result.result);
+      } catch {
+        reject(new Error("Claude Code /usage returned invalid structured output"));
+      }
     });
   });
 }
