@@ -1,4 +1,12 @@
-## 0.2.7-rc.1 — standalone packaging of reliability fixes (unreleased)
+# Changelog
+
+## 0.2.7 — non-prerelease release (2026-10-17)
+
+- Promote the verified v0.2.7-rc.4 payload to v0.2.7, without changing the shipped Go Runtime, MCP Helper or wrapper behavior.
+- Update bilingual landing pages and include both README languages and the technical reference in the installable archive.
+- Preserve the experimental/unofficial designation and documented real-Desktop long-session, recovery and platform-test limits.
+
+## 0.2.7-rc series — bundled reliability changes
 
 - Bundle the callback-disconnect fencing fix in the **plugin's own** Go Runtime: late or repeated client cancellation no longer detaches a newer client stream; preserve existing 90-minute interactive tool wait and never replay an external tool.
 - Default to native Claude Code `/usage`, with direct OAuth usage an explicit opt-in and isolated caches.
@@ -14,8 +22,6 @@
 - Supervised external Runtime port discovery: optional `runtimePortFile` reads a private owner-only loopback port file for each signed request. A systemd restart can change the port without leaving Magpie's plugin stranded at the old URL. Invalid, symlinked or publicly accessible files fail closed; the existing endpoint/path/session signing contract remains unchanged.
 - Make the **outer client the sole automatic compaction authority** for authenticated, persisted interactive sessions: the plugin-owned Claude Code child receives `DISABLE_AUTO_COMPACT=1`, while standalone one-shot invocations retain native compaction. Explicit Desktop `/compact` still runs as a separate tool-free summarization helper. This prevents an independent native compaction from silently diverging from Desktop's visible summary; the native session still stores tool callback state and safely refuses unmatched historical continuations.
 - Add host-compatibility checks for Magpie v0.1.1268, and document that same-provider hook collisions cannot be eliminated solely within a third-party plugin.
-
-# Changelog
 
 ## 0.2.6 — accurate Claude quota windows
 
