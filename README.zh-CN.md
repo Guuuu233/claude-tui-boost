@@ -82,6 +82,8 @@ magpie plugin login claude-tui
 
 **版本说明：** `v0.2.7` 是 `v0.2.7-rc.4` 的非预发布正式版，运行时代码未作新的功能改动。GTT、NTT VPS 上有真实运行验收记录，但不是所有 Desktop 长会话恢复路径或系统组合都经过完整验证，项目仍为非官方实验性实现。
 
+**下一候选版本：** `v0.2.8-rc.1` 修复了原生 Claude 的自动压缩开关经过 tmux 时可能丢失的问题。它仍是预发布版本，不能保证全部长会话 502 已解决，详见 [发布说明](RELEASE_NOTES.md)。
+
 ## 参与贡献
 
 欢迎在 [Issues](https://github.com/Guuuu233/magpie-claude-tui-plugin/issues) 反馈问题、通过 [Pull Requests](https://github.com/Guuuu233/magpie-claude-tui-plugin/pulls) 提交改进；反馈前请删除个人凭证和私有会话内容。如果项目对你有用，也欢迎点个 ⭐ Star。

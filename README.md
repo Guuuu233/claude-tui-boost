@@ -82,6 +82,8 @@ magpie plugin login claude-tui
 
 **Release status:** `v0.2.7` is the non-prerelease successor to `v0.2.7-rc.4`. The same Runtime binaries were tested on GTT and NTT VPS instances, but not every Desktop long-session recovery path or platform combination has been verified. This remains an unofficial experimental project.
 
+**Next candidate:** `v0.2.8-rc.1` fixes native Claude's auto-compaction flag being lost through tmux. It is a pre-release candidate, not a guarantee that all long-session 502s are fixed; see [release notes](RELEASE_NOTES.md).
+
 ## Contribute
 
 Questions and bug reports are welcome in [Issues](https://github.com/Guuuu233/magpie-claude-tui-plugin/issues); improvements are welcome via [Pull Requests](https://github.com/Guuuu233/magpie-claude-tui-plugin/pulls). Please remove credentials and private transcripts from reports. If the project is useful, consider giving it a ⭐.

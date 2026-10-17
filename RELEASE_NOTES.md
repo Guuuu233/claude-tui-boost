@@ -1,4 +1,20 @@
-# v0.2.7 — native Claude quota accuracy and interactive bridge reliability
+# v0.2.8-rc.1 — native tmux auto-compaction ownership fix
+
+This is an **experimental pre-release** of the distributable Claude TUI plugin, based on v0.2.7. It is not a claim that every long-session 502 is fixed.
+
+**Bug fixed:** On client-owned Claude Desktop sessions, Go Runtime set `DISABLE_AUTO_COMPACT=1` for the Bun wrapper. A tmux server that predated the wrapper could fail to pass that flag to the actual native Claude Code process. This release explicitly sets `DISABLE_AUTO_COMPACT=1` in the native launch command, and explicitly removes the flag for standalone sessions that should retain native auto-compaction. Tests run the actual native launch shell with both opposite inherited tmux environments.
+
+**Scope:** No Magpie core modifications, no changes to the Go Runtime executable or MCP tool-result replay guard; existing transcript/state formats remain compatible. Existing already-running native Claude children do not receive the setting until their next fresh launch/resume. Never interrupt a real tool operation just to apply this update.
+
+**Unresolved:** Long genuine Desktop `/compact` at 400–500K tokens, process hard-kill recovery, and concurrent native Claude memory pressure remain unproven. The 2026-10-17 NTT 502 involved both client disconnects and severe 1 GiB VPS memory/IO contention, so this targeted fix cannot eliminate every such failure.
+
+To install this exact candidate after publication:
+
+```sh
+magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.8-rc.1
+```
+
+## Previous stable release: v0.2.7 — native Claude quota accuracy and interactive bridge reliability
 
 This is the **non-prerelease v0.2.7** of the standalone `magpie-claude-tui-plugin`, promoted from the tested `v0.2.7-rc.4` candidate without additional Runtime behavior changes. It remains an **unofficial experimental third-party integration**, not a claim that all clients, recovery paths or subscription use cases have been certified. No Magpie source modification is required. **A GitHub Release does not automatically upgrade existing VPS installations.**
 
