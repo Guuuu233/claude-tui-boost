@@ -44,11 +44,20 @@ const send=async messages=>{
   return {status:response.status,...unpack(raw)};
 };
 const started=Date.now();
+const delayMs=Number(process.env.MAGPIE_CANARY_TOOL_PAUSE_MS??'0');
+if(!Number.isInteger(delayMs)||delayMs<0||delayMs>150_000)throw Error('Invalid bounded synthetic tool wait');
 try {
   const first=await send([user]);
   const call=first.blocks.find(x=>x.name==='canary_echo'&&typeof x.id==='string');
   console.log(JSON.stringify({step:'tool_use',status:first.status,events:first.events,tool_returned:Boolean(call),s:Number(((Date.now()-started)/1000).toFixed(1))}));
   if(first.status!==200||!call)process.exit(4);
+  if(delayMs) {
+    // The synthetic external tool is deliberately held by the client for
+    // longer than the native CLI's old automatic 120s MCP background limit.
+    // No real tool or shell operation runs while the original callback waits.
+    console.log(JSON.stringify({step:'client_wait',seconds:delayMs/1000,side_effects:false}));
+    await new Promise(resolve=>setTimeout(resolve,delayMs));
+  }
   const assistant={role:'assistant',content:[{type:'tool_use',id:call.id,name:'canary_echo',input:{message:'HELLO_CANARY'}}]};
   const result={role:'user',content:[{type:'tool_result',tool_use_id:call.id,content:'HELLO_CANARY ACKNOWLEDGED'}]};
   const second=await send([user,assistant,result]);
