@@ -6,7 +6,7 @@
 
 ## 中文使用说明
 
-### v0.2.7-rc.4 独立插件候选（未发布）
+### v0.2.7-rc.4 独立插件预发布版
 
 外部 systemd 管理 Runtime 时，推荐在插件 `options` 中保留 `runtimeURL`，同时添加 `runtimePortFile`，例如 `"runtimePortFile": "/home/magpie/.config/magpie-tui-runtime-production/port"`。插件会在每次请求时读取仅服务用户可访问的端口文件，从而在 Runtime 重启改变端口后自动恢复，避免网关静态 URL 漂移导致的 502。该选项只允许本机回环端口，不允许指向其他主机；托管模式无需配置它。
 
