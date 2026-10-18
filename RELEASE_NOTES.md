@@ -1,4 +1,14 @@
-# v0.2.8-rc.2 — bounded Desktop 502 companion recovery
+# v0.2.8-rc.3 — checkpoint lookup and launch barriers
+
+Candidate only. Every production checkpoint lookup now uses the same bounded strict reader as mutations and propagates corruption as an error. A failed dirty-marker write (including a missing checkpoint) prevents the native child from starting. Checkpoint commits sync the temporary file before rename and the containing directory after rename; a failed rename never deletes the previous checkpoint. Updates larger than 16 MiB are rejected before replacement.
+
+Desktop compaction can also change the first user message while the Runtime remembers the old prefix. Previously that prefix mismatch diverted even a valid unique-reply-anchor continuation to an ephemeral helper session. A verified canonical continuation now keeps the original native session and updates the remembered prefix. Unrelated and different-model helper requests retain their isolation.
+
+An unchanged `[Desktop companion, synthetic error]` retry with no new suffix still refuses to resume. The plugin does not infer permission to repeat an earlier tool operation from a client error string. Add a new explicit user continuation only when the saved checkpoint and safe suffix can be verified; uncertain tool outcomes still require reconciliation.
+
+These changes do not provide a cross-process checkpoint transaction, ordinary-turn execution receipts, or a guarantee against storage hardware failure. Real Desktop long-context and extended idle acceptance remain separate gates.
+
+## Previous candidate: v0.2.8-rc.2 — bounded Desktop 502 companion recovery
 
 This is an **isolated candidate, not yet released or production deployed**. It builds on rc.1, without modifying Magpie's core or weakening MCP tool-result replay protection.
 

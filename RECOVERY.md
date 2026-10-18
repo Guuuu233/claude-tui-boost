@@ -2,6 +2,12 @@
 
 The plugin handles interrupted native Claude interactive sessions conservatively. When tool execution or delivery is uncertain, the runtime returns HTTP 409 rather than replaying `Write`, `Edit`, `Bash`, or another client-side tool.
 
+## Checkpoint integrity and empty retries (v0.2.8-rc.3 candidate)
+
+All checkpoint lookups validate the file at the point of use. Invalid, insecure or oversized state returns HTTP 409; it must not be treated as a new conversation. A native resume also stops if its dirty checkpoint cannot be persisted before launch. Preserve damaged state for investigation rather than deleting it to force a fresh session.
+
+If the client resends exactly a known generated continuation followed by its synthetic error, with no new user content, removing that failed pair leaves an empty suffix. This remains a deliberate refusal and is regression-tested. A client error is not evidence that an ordinary task or tool was never executed; automatic replay remains prohibited without execution provenance.
+
 ## Known persisted-resume 502 feedback (v0.2.8-rc.2 candidate)
 
 On a **clean, completed checkpoint**, Desktop can append an automatically generated continuation and a synthetic HTTP 502 if that continuation failed before the native Claude process started. A later ordinary user turn may then present that synthetic assistant error inside the historical suffix. The plugin can skip the strictly identified, text-only continuation/error pair; it cannot skip arbitrary error messages, old `tool_result`, model-authored responses or an ordinary user turn that failed for an unknown reason. This safety boundary deliberately prevents skipping work that might already have occurred.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.8-rc.3 — checkpoint lookup and launch barriers (2026-10-18)
+
+- Use bounded strict checkpoint reads at every production lookup; report damage separately from an absent conversation even after a successful ingress preflight.
+- Keep canonical native continuity when Desktop compacts the first user message while the Runtime is still running; a verified checkpoint/reply anchor takes precedence over the auxiliary-thread prefix heuristic.
+- Abort native resume before child start when its dirty checkpoint cannot be saved or has disappeared; return a recovery-required HTTP 409 instead of a misleading transport 502.
+- Sync checkpoint contents and the parent directory, preserve the previous file if replacement fails, and reject updates that would exceed the reader's size limit.
+- Cover original companion/error retries with no new user content: keep refusing an empty suffix rather than re-executing the old turn.
+
 ## 0.2.8-rc.2 — isolated recovery candidate (2026-10-18)
 
 - Recognize a narrow set of persisted-resume 502 failures (`suffix_rejected` included) when and only when paired with a tool-free Desktop-generated continuation after the saved assistant checkpoint.

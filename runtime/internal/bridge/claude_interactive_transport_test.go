@@ -1993,6 +1993,10 @@ printf '%s\n' '{"type":"result","session_id":"inner-anchor","stop_reason":"end_t
 		SessionID: "inner-anchor", Model: model, ThreadKey: firstWords(baseReq),
 		ConvKey: keys[0], ReplyKey: assistantReplyKey(base[1]), ContextKey: turnKey(owner, baseReq, nil),
 	})
+	// The same Runtime normally still remembers the original outer prefix.
+	// A compacted prefix must not be mistaken for a helper before checking
+	// the unique saved assistant anchor.
+	b.seedOuterThread(owner, outer, firstWords(baseReq))
 	rewritten := &Request{Model: model, Messages: []Message{
 		{Role: "user", Parts: []Part{{Kind: Text, Text: "compacted earlier history"}}},
 		base[1],
@@ -2017,6 +2021,9 @@ printf '%s\n' '{"type":"result","session_id":"inner-anchor","stop_reason":"end_t
 		t.Fatalf("reply-anchor resume = %q %q", text, stop)
 	}
 	run.ended(rewritten, text, stop, true)
+	if run.outerSession != outer || b.outerThread(owner, outer) != firstWords(rewritten) {
+		t.Fatal("verified compacted continuation was not retained as the canonical outer thread")
+	}
 	logBytes, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)

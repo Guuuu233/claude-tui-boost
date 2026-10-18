@@ -16,6 +16,18 @@ import (
 	"time"
 )
 
+// Legacy assertion helpers only. Production callers must handle the error
+// returned by loadInteractiveSession rather than treating damage as absence.
+func (b *subscriptionBridge) interactiveSession(owner, outer string) (interactiveSessionEntry, bool) {
+	entry, ok, _ := b.loadInteractiveSession(owner, outer)
+	return entry, ok
+}
+
+func readInteractiveSessionState() interactiveSessionState {
+	state, _ := loadInteractiveSessionStateStrict()
+	return state
+}
+
 // Server mirrors the deployed gateway's struct surface the tests reach.
 type Server struct {
 	subscription *subscriptionBridge

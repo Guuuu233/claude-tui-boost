@@ -24,6 +24,7 @@ const (
 	interactiveRestoreReplyAnchor        interactiveRestoreStatus = "reply_anchor"
 	interactiveRestoreCompanion          interactiveRestoreStatus = "turn_companion"
 	interactiveRestoreStateMissing       interactiveRestoreStatus = "state_missing"
+	interactiveRestoreStateInvalid       interactiveRestoreStatus = "state_invalid"
 	interactiveRestoreDirty              interactiveRestoreStatus = "dirty"
 	interactiveRestoreContextMismatch    interactiveRestoreStatus = "context_mismatch"
 	interactiveRestoreCheckpointNotFound interactiveRestoreStatus = "checkpoint_not_found"
@@ -101,25 +102,12 @@ func interactiveSessionWorkDir(owner, outerSession string) (string, error) {
 	return dir, nil
 }
 
-func readInteractiveSessionState() interactiveSessionState {
-	out := interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: map[string]interactiveSessionEntry{}}
-	b, err := os.ReadFile(interactiveSessionStatePath())
-	if err != nil {
-		return out
-	}
-	if json.Unmarshal(b, &out) != nil || out.Version != interactiveSessionStateVersion || out.Sessions == nil {
-		return interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: map[string]interactiveSessionEntry{}}
-	}
-	return out
-}
-
-// Every checkpoint *mutation* must load a validated prior state while
-// stateMu is held. A separate request preflight cannot protect a later
-// write from a replaced/truncated file or an internal callback: the old
-// permissive reader turned those failures into an empty checkpoint map.
-// Keep it separate from the legacy best-effort reader for older read-only
-// users; do not ever use that reader to overwrite persisted state.
+// Reads and mutations use the same bounded validator under stateMu. A
+// preflight cannot protect a later lookup from a replaced/truncated file;
+// a damaged store must never become a missing conversation.
 const maxInteractiveSessionStoreBytes = 16 << 20
+
+var errInteractiveSessionStoreInvalid = errors.New("Claude interactive checkpoint store invalid; refusing native history replay")
 
 func loadInteractiveSessionStateStrict() (interactiveSessionState, error) {
 	empty := interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: make(map[string]interactiveSessionEntry)}
@@ -168,11 +156,7 @@ func loadInteractiveSessionStateStrict() (interactiveSessionState, error) {
 	return state, nil
 }
 
-// readInteractiveSessionState intentionally returns an empty value for a
-// missing store, but a *present and malformed* store is not equivalent to a
-// new user session. Call this strict gate before any persisted conversation
-// may start a new PTY, so corrupted JSON cannot silently erase the owner of
-// an existing native transcript and trigger an unsafe historical bootstrap.
+// Check before matching live runs as well as at each later state lookup.
 func (b *subscriptionBridge) verifyInteractiveSessionStore() error {
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
@@ -198,6 +182,9 @@ func writeInteractiveSessionState(state interactiveSessionState) error {
 	if err != nil {
 		return err
 	}
+	if len(b) > maxInteractiveSessionStoreBytes {
+		return errors.New("checkpoint update exceeds store size limit")
+	}
 	tmp, err := os.CreateTemp(dir, ".claude-interactive-sessions-*")
 	if err != nil {
 		return err
@@ -212,29 +199,38 @@ func writeInteractiveSessionState(state interactiveSessionState) error {
 		tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 	if err := os.Rename(name, interactiveSessionStatePath()); err != nil {
-		// Windows cannot replace an existing file with Rename. The experimental
-		// backend is primarily Unix/PTY based, but keep the state helper portable.
-		_ = os.Remove(interactiveSessionStatePath())
-		if err2 := os.Rename(name, interactiveSessionStatePath()); err2 != nil {
-			return err
-		}
+		// Never delete the last checkpoint to retry a failed replacement.
+		return err
 	}
-	return nil
+	parent, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return parent.Sync()
 }
 
-func (b *subscriptionBridge) interactiveSession(owner, outerSession string) (interactiveSessionEntry, bool) {
+func (b *subscriptionBridge) loadInteractiveSession(owner, outerSession string) (interactiveSessionEntry, bool, error) {
 	if outerSession == "" {
-		return interactiveSessionEntry{}, false
+		return interactiveSessionEntry{}, false, nil
 	}
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	state := readInteractiveSessionState()
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		log.Printf("Claude interactive checkpoint lookup rejected: %v", err)
+		return interactiveSessionEntry{}, false, errInteractiveSessionStoreInvalid
+	}
 	e, ok := state.Sessions[interactiveSessionStateKey(owner, outerSession)]
-	return e, ok
+	return e, ok, nil
 }
 
 func (b *subscriptionBridge) saveInteractiveSession(owner, outerSession string, e interactiveSessionEntry) error {
@@ -288,28 +284,31 @@ func (r *subscriptionRun) persistFirstToolAnchorLocked() error {
 	return writeInteractiveSessionState(state)
 }
 
-func (b *subscriptionBridge) markInteractiveSessionDirty(owner, outerSession string) {
+func (b *subscriptionBridge) markInteractiveSessionDirty(owner, outerSession string) error {
 	if outerSession == "" {
-		return
+		return nil
 	}
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
 	state, err := loadInteractiveSessionStateStrict()
 	if err != nil {
-		log.Printf("Claude interactive checkpoint store: refusing dirty update: %v", err)
-		return
+		return fmt.Errorf("refusing dirty update: %w", err)
 	}
 	key := interactiveSessionStateKey(owner, outerSession)
 	e, ok := state.Sessions[key]
-	if !ok || e.Dirty {
-		return
+	if !ok {
+		return errors.New("checkpoint missing; refusing native resume without dirty state")
+	}
+	if e.Dirty {
+		return nil
 	}
 	e.Dirty = true
 	e.UpdatedAt = time.Now().UTC()
 	state.Sessions[key] = e
 	if err := writeInteractiveSessionState(state); err != nil {
-		log.Printf("Claude interactive session state: %v", err)
+		return fmt.Errorf("persisting dirty checkpoint: %w", err)
 	}
+	return nil
 }
 
 // claimInteractiveOuterTurn gives one in-flight interactive turn per
@@ -562,7 +561,10 @@ func claudeDesktopFailedTurnCompanionReply(m Message) bool {
 // can safely accept only the caller's new suffix. It never authorizes replay
 // of the entire outer history.
 func (b *subscriptionBridge) restoreInteractiveSession(owner, outerSession string, req *Request) (interactiveSessionEntry, []Message, interactiveRestoreStatus) {
-	saved, ok := b.interactiveSession(owner, outerSession)
+	saved, ok, err := b.loadInteractiveSession(owner, outerSession)
+	if err != nil {
+		return interactiveSessionEntry{}, nil, interactiveRestoreStateInvalid
+	}
 	if !ok {
 		return interactiveSessionEntry{}, nil, interactiveRestoreStateMissing
 	}
