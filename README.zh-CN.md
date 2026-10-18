@@ -2,15 +2,15 @@
 
 [English](./README.md) · **简体中文**
 
-# 🐦 Magpie Claude TUI Plugin
+# Claude TUI Boost
 
-### 让 Magpie Agent 用上真正交互式的 Claude Code
+### 让 Claude 订阅额度更耐用
 
-**让 Agent 通过 Magpie 调用 Claude，同时让后端 Claude Code 保持原生 TUI 交互会话。**  
+**通过真实 Claude Code 交互式 TUI 接入 Magpie/OpenCode，让 Agent 复用会话、稳定衔接 MCP 工具调用。**  
 持续会话、流式响应、MCP 工具往返——无需修改 Magpie 本体。
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.7-blue)](https://github.com/Guuuu233/magpie-claude-tui-plugin/releases/tag/v0.2.7)
+[![Release](https://img.shields.io/badge/release-v0.2.8-blue)](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.8)
 [![macOS / Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](COMPATIBILITY.md)
 
 </div>
@@ -55,10 +55,10 @@
 
 **环境要求：** 支持 GitHub 插件安装的 Magpie、官方 Claude Code CLI **2.1.268 或更新版本**，系统为 macOS / Linux（arm64、x64）。连接向导可以准备 tmux，Bun 由 Magpie 宿主提供；暂不支持原生 Windows。**插件和 Claude Code 必须安装在运行 Magpie 的同一台主机**，VPS 用户应在 VPS 上操作。
 
-**第 1 步：安装 v0.2.7 正式版**（[v0.2.7](https://github.com/Guuuu233/magpie-claude-tui-plugin/releases/tag/v0.2.7)）。
+**第 1 步：安装 v0.2.8 正式版**（[v0.2.7](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.8)）。
 
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7
+magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.8
 magpie plugin login claude-tui
 ```
 
@@ -80,10 +80,8 @@ magpie plugin login claude-tui
 | [完整技术说明](TECHNICAL_REFERENCE.md) | 高级参数、权限影响、测试和源码构建 |
 | [版本说明](RELEASE_NOTES.md) · [更新记录](CHANGELOG.md) | 已实现改进、已知限制和后续维护 |
 
-**版本说明：** `v0.2.7` 是 `v0.2.7-rc.4` 的非预发布正式版，运行时代码未作新的功能改动。GTT、NTT VPS 上有真实运行验收记录，但不是所有 Desktop 长会话恢复路径或系统组合都经过完整验证，项目仍为非官方实验性实现。
-
-**下一候选版本：** `v0.2.8-rc.1` 修复了原生 Claude 的自动压缩开关经过 tmux 时可能丢失的问题。它仍是预发布版本，不能保证全部长会话 502 已解决，详见 [发布说明](RELEASE_NOTES.md)。
+**当前稳定版：** `v0.2.8` 在 `v0.2.7` 基础上更新了 Claude Desktop 会话连续性及 checkpoint 安全性；复杂长会话的恢复仍属实验性能力，详见[发布说明](RELEASE_NOTES.md)。
 
 ## 参与贡献
 
-欢迎在 [Issues](https://github.com/Guuuu233/magpie-claude-tui-plugin/issues) 反馈问题、通过 [Pull Requests](https://github.com/Guuuu233/magpie-claude-tui-plugin/pulls) 提交改进；反馈前请删除个人凭证和私有会话内容。如果项目对你有用，也欢迎点个 ⭐ Star。
+欢迎在 [Issues](https://github.com/Guuuu233/claude-tui-boost/issues) 反馈问题、通过 [Pull Requests](https://github.com/Guuuu233/claude-tui-boost/pulls) 提交改进；反馈前请删除个人凭证和私有会话内容。如果项目对你有用，也欢迎点个 ⭐ Star。

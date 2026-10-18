@@ -2,15 +2,15 @@
 
 **English** · [简体中文](./README.zh-CN.md)
 
-# 🐦 Magpie Claude TUI Plugin
+# Claude TUI Boost
 
-### Real interactive Claude Code for Magpie-powered agents
+### Make your Claude subscription go further with an interactive TUI
 
-**Keep Claude Code in its interactive TUI while your Agent talks through Magpie.**  
+**Bring real interactive Claude Code to Magpie/OpenCode, with persistent sessions and safe MCP tool handoffs.**  
 Persistent sessions, streamed responses and MCP tool handoffs—without modifying Magpie itself.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.7-blue)](https://github.com/Guuuu233/magpie-claude-tui-plugin/releases/tag/v0.2.7)
+[![Release](https://img.shields.io/badge/release-v0.2.8-blue)](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.8)
 [![macOS / Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](COMPATIBILITY.md)
 
 </div>
@@ -55,10 +55,10 @@ Magpie-compatible Agent / SDK client
 
 **Requirements:** Magpie with GitHub plugin support; official Claude Code CLI **2.1.268+**; macOS or Linux (arm64/x64). The login flow can prepare tmux; Bun comes from the Magpie host. Native Windows is not supported. Install on the **machine running Magpie and Claude Code** (including a VPS), not just on a remote client.
 
-**1. Install v0.2.7** ([v0.2.7](https://github.com/Guuuu233/magpie-claude-tui-plugin/releases/tag/v0.2.7)):
+**1. Install v0.2.8** ([v0.2.7](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.8)):
 
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7
+magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.8
 magpie plugin login claude-tui
 ```
 
@@ -80,10 +80,8 @@ magpie plugin login claude-tui
 | [Technical reference](TECHNICAL_REFERENCE.md) | Advanced configuration, exact security effects, tests and builds |
 | [Release notes](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md) | What's new and what remains experimental |
 
-**Release status:** `v0.2.7` is the non-prerelease successor to `v0.2.7-rc.4`. The same Runtime binaries were tested on GTT and NTT VPS instances, but not every Desktop long-session recovery path or platform combination has been verified. This remains an unofficial experimental project.
-
-**Next candidate:** `v0.2.8-rc.2` builds on the tmux auto-compaction fix and addresses a strictly identified `suffix_rejected` 502 history-feedback loop. It remains a pre-release: existing dirty MCP turns and general long-session recovery are not guaranteed; see [release notes](RELEASE_NOTES.md).
+**Current release:** `v0.2.8` includes native-session continuity and checkpoint safety updates following `v0.2.7`. Complex long-lived Desktop recovery is still experimental; see [release notes](RELEASE_NOTES.md).
 
 ## Contribute
 
-Questions and bug reports are welcome in [Issues](https://github.com/Guuuu233/magpie-claude-tui-plugin/issues); improvements are welcome via [Pull Requests](https://github.com/Guuuu233/magpie-claude-tui-plugin/pulls). Please remove credentials and private transcripts from reports. If the project is useful, consider giving it a ⭐.
+Questions and bug reports are welcome in [Issues](https://github.com/Guuuu233/claude-tui-boost/issues); improvements are welcome via [Pull Requests](https://github.com/Guuuu233/claude-tui-boost/pulls). Please remove credentials and private transcripts from reports. If the project is useful, consider giving it a ⭐.

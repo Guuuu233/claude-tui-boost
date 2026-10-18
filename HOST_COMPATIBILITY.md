@@ -34,6 +34,6 @@ MAGPIE_TUI_TEST_HOST=/absolute/path/to/magpie/internal/plugin/host.js bun test
 ## Updates and rollback
 
 - This is an independent GitHub package, outside `@magpie-community/*` automatic community-package updates. Magpie normally offers its update separately. A Magpie application update can still restart the plugin host and affect an active native session.
-- For deliberate updates use a published tag, e.g. `magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.4`. For a strict immutable pin use that release's full commit SHA. Git tags can move; an explicit plugin Update action can change the selected pin. Check the installed commit in Magpie.
+- For deliberate updates use a published tag, e.g. `magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.4`. For a strict immutable pin use that release's full commit SHA. Git tags can move; an explicit plugin Update action can change the selected pin. Check the installed commit in Magpie.
 - Before a Magpie upgrade, finish active tool calls and keep the previous Magpie binary/version and private state backup. Verify sign-in, a fresh conversation, a harmless tool-result round trip and cancellation before continuing important work. Do not use an old uncertain Write/Edit/Bash request as an upgrade probe.
 - Missing stable conversation identity or valid hook proof is refused. No guessed session id or automatic uncertain tool replay is introduced for compatibility. Rollback of binaries is not permission to delete checkpoints or reuse partially completed tool calls.

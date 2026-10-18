@@ -14,10 +14,10 @@ This document preserves the previous full-length README for operators who need c
 
 **工作流：** `兼容 Magpie 的 Agent / SDK 客户端 → Magpie 网关 → Claude TUI 插件 + Go Runtime → 原生交互式 Claude Code`。完整 SDK 接入仍取决于客户端协议适配；不保证所有 SDK 即插即用。
 
-**快速尝试 / Quick start**（[v0.2.7-rc.4 预发布版](https://github.com/Guuuu233/magpie-claude-tui-plugin/releases/tag/v0.2.7-rc.4)，需要自行检查账户条款和风险）：
+**快速尝试 / Quick start**（[v0.2.7-rc.4 预发布版](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.7-rc.4)，需要自行检查账户条款和风险）：
 
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7-rc.4
+magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.7-rc.4
 magpie plugin login claude-tui
 ```
 
@@ -89,7 +89,7 @@ Magpie / OpenCode / 接入 Magpie 网关的客户端
 前提：支持 GitHub 插件安装的 Magpie、macOS/Linux（arm64 或 amd64）、官方 Claude Code CLI **2.1.268 或更新版本**、可运行 Bun/tmux 的环境。**原生 Windows 未支持**。
 
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7-rc.4
+magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.7-rc.4
 magpie plugin login claude-tui
 ```
 
@@ -115,7 +115,7 @@ magpie plugin login claude-tui
 - **v0.2.7-rc.4 已作为 GitHub Pre-release 发布**，建议固定对应标签或安装经过验证的 `.tgz` 包。它不是 `v0.2.7` 稳定版；GitHub 发布不会自动升级 VPS 或现有 Magpie，请勿在工具执行过程中强制切换。
 
 - **v0.2.6 修正 Claude TUI 额度读取**，优先读取账号实际的 5 小时与 7 天额度窗口，并保留无文件凭据 profile 的本机 CLI 回退。发布 GitHub 版本不会自动升级 VPS 上已安装的副本；需要在运行 Magpie 的主机更新插件，再刷新额度页。
-- **v0.2.4 修复 Claude Desktop `/compact` 将已结束的历史工具误当作待接续调用的问题**。在 Magpie 中更新插件，或明确安装 `magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.4`。其他 409/502 仍需按实际错误排查；固定旧版本的安装不会自动获得此修复。升级前应结束正在执行的工具、保留旧状态及回滚途径。
+- **v0.2.4 修复 Claude Desktop `/compact` 将已结束的历史工具误当作待接续调用的问题**。在 Magpie 中更新插件，或明确安装 `magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.4`。其他 409/502 仍需按实际错误排查；固定旧版本的安装不会自动获得此修复。升级前应结束正在执行的工具、保留旧状态及回滚途径。
 - 插件携带自己的 Runtime、Helper 和 Wrapper；升级 Magpie **不会自动替换这些文件**，却可能修改插件加载、模型 API 转换、会话标识、流式请求与登录流程，因此**不能承诺对所有未来 Magpie/Claude Code 版本兼容**。有按已验证版本、最新发布版、上游 `main` 执行的兼容检查，详见 [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md)。
 - 支持 macOS 与 Linux 的四种 CPU/OS 组合发布构建；交叉编译通过**不代表**四种平台全部经历真实 OAuth 与 GUI 测试。用户数据目录、订阅额度、历史会话和私人恢复凭证不会随 GitHub 安装包分发。
 
@@ -141,7 +141,7 @@ This provider uses a locally installed, already signed-in Claude Code **interact
 
 Requirements: Magpie with GitHub plugin installation support, official Claude Code **v2.1.268 or newer** installed, and macOS or Linux (arm64 / x86_64). Bun is supplied by the Magpie plugin host. The automatic connection flow prepares tmux and a dedicated Claude profile; native Windows is unsupported. The plugin/runtime and Claude Code must run on the same machine; installing on a Mac does not update a VPS.
 ```sh
-magpie plugin add github:Guuuu233/magpie-claude-tui-plugin#v0.2.7-rc.4
+magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.7-rc.4
 magpie plugin login claude-tui
 ```
 
@@ -214,4 +214,4 @@ Repeat with `GOOS=darwin` and `GOARCH=arm64/amd64`, or `GOOS=linux GOARCH=arm64`
 
 Initial source was developed as [magpie-community/plugins PR #107](https://github.com/magpie-community/plugins/pull/107), which the maintainer **closed without merging**. This independent repository is **not** a continuation of an official review or approval. We retain upstream and vendored license notices (`LICENSE`, `runtime/LICENSE.magpie`, `vendor/claude-bridge-magpie/LICENSE`) and provide release checksums.
 
-Issues and security concerns: [GitHub Issues](https://github.com/Guuuu233/magpie-claude-tui-plugin/issues). This is an experimental third-party distribution without SLA, support commitments or official affiliation.
+Issues and security concerns: [GitHub Issues](https://github.com/Guuuu233/claude-tui-boost/issues). This is an experimental third-party distribution without SLA, support commitments or official affiliation.
