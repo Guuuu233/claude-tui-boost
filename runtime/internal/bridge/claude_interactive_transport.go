@@ -893,6 +893,8 @@ func (b *subscriptionBridge) startInteractiveRequest(ctx context.Context, req *R
 		contextChanged := saved.ContextKey != "" && saved.ContextKey != turnKey(owner, req, nil)
 		return b.startInteractiveResumeTurn(ctx, req, model, configDir, owner, outerSession, saved, since, contextChanged)
 	default:
+		log.Printf("Claude interactive persisted resume rejected: reason=%s %s", status,
+			interactiveRestoreRejectionDiagnostic(saved, req))
 		return nil, nil, fmt.Errorf("Claude interactive persisted resume failed: %s; refusing full history replay", status)
 	}
 }

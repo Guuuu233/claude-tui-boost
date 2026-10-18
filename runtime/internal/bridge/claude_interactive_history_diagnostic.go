@@ -69,6 +69,67 @@ func interactiveRecoveryDiagnostic(req *Request) string {
 	return strings.Join(rows, "; ")
 }
 
+// Explain a failed persisted resume through bounded structural metadata
+// only. Never emit the checkpoint hash, native/outer session IDs, prompt,
+// tool names/IDs, args, results or file paths. Crucially, do not rehash the
+// whole historical transcript: the actual verifier has already done that,
+// and a second pass on a 500k context can allocate tens of MiB during a
+// 502 retry storm on a 1 GiB VPS. Diagnostic work never authorizes a run.
+func interactiveRestoreRejectionDiagnostic(saved interactiveSessionEntry, req *Request) string {
+	if req == nil {
+		return "history=missing"
+	}
+	replies, replyIndex := 0, -1
+	if saved.ReplyKey != "" {
+		for i, m := range req.Messages {
+			if m.Role == "assistant" && assistantReplyKey(m) == saved.ReplyKey {
+				replies++
+				replyIndex = i
+			}
+		}
+	}
+	anchor := "none"
+	switch {
+	case replies > 1:
+		anchor = "ambiguous"
+	case replies == 1:
+		anchor = "unique"
+	}
+	// An exact cumulative-key match may exist even when replyKey is absent.
+	// Leave that unknown instead of guessing or rereading the full history.
+	match := -1
+	if replies == 1 {
+		match = replyIndex
+	}
+	suffix := "no_checkpoint"
+	if match >= 0 {
+		suffix = "empty"
+		if match < len(req.Messages)-1 {
+			suffix = "unrecognized_suffix"
+			for _, m := range req.Messages[match+1:] {
+				for _, p := range m.Parts {
+					if p.Kind == ToolResult {
+						suffix = "unmatched_tool_result"
+						break
+					}
+				}
+				if suffix == "unmatched_tool_result" {
+					break
+				}
+				if m.Role == "assistant" {
+					suffix = "intervening_assistant"
+				}
+			}
+		}
+	}
+	summary := fmt.Sprintf("checkpoint_saved=%t anchor=%s suffix=%s dirty=%t rows=%d; %s",
+		saved.ConvKey != "", anchor, suffix, saved.Dirty, len(req.Messages), interactiveRecoveryDiagnostic(req))
+	if len(summary) > 1024 {
+		return summary[:1024]
+	}
+	return summary
+}
+
 func interactiveHistoryFingerprints(msgs []Message) []historyMessageFingerprint {
 	msgs = withoutDynamicTokenBudgetNotices(msgs)
 	words := messageWords(msgs)
