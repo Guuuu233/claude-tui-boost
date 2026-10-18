@@ -395,6 +395,13 @@ func claudeDesktopTurnCompanionMessage(m Message) bool {
 	if m.Role != "user" {
 		return false
 	}
+	// A synthetic continuation must never smuggle a client-side tool
+	// result into a segment that the resume checker may discard.
+	for _, p := range m.Parts {
+		if p.Kind != Text {
+			return false
+		}
+	}
 	for _, p := range m.Parts {
 		if p.Kind != Text {
 			continue
@@ -423,18 +430,41 @@ func claudeDesktopTurnCompanionSuffix(req *Request) []Message {
 }
 
 func claudeDesktopFailedTurnCompanionReply(m Message) bool {
-	if m.Role != "assistant" {
+	if m.Role != "assistant" || len(m.Parts) == 0 {
 		return false
 	}
 	var text strings.Builder
 	for _, p := range m.Parts {
-		if p.Kind == Text {
-			text.WriteString(p.Text)
+		if p.Kind != Text {
+			// This recognition is used to *discard* a failed transport
+			// artifact. Never discard an actual tool call or image.
+			return false
+		}
+		text.WriteString(p.Text)
+		if text.Len() > 8192 {
+			return false
 		}
 	}
 	s := strings.TrimSpace(text.String())
-	return strings.HasPrefix(s, "API Error: 502 ") &&
-		strings.Contains(s, "Claude interactive persisted resume failed: dirty; refusing full history replay")
+	if !strings.HasPrefix(s, "API Error: 502 ") {
+		return false
+	}
+	// A clean checkpoint can reject a Desktop-generated follow-up for
+	// several reasons. In all these cases startInteractiveRequest exited
+	// before starting a new native run. Restrict the elision to the known
+	// transport signature and a synthetic, tool-free Desktop companion.
+	for _, reason := range []interactiveRestoreStatus{
+		interactiveRestoreDirty,
+		interactiveRestoreSuffixRejected,
+		interactiveRestoreCheckpointNotFound,
+		interactiveRestoreContextMismatch,
+		interactiveRestoreStateMissing,
+	} {
+		if strings.Contains(s, "Claude interactive persisted resume failed: "+string(reason)+"; refusing full history replay") {
+			return true
+		}
+	}
+	return false
 }
 
 // restoreInteractiveSession decides whether a persisted inner Claude session

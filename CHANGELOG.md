@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.8-rc.2 — isolated recovery candidate (2026-10-18)
+
+- Recognize a narrow set of persisted-resume 502 failures (`suffix_rejected` included) when and only when paired with a tool-free Desktop-generated continuation after the saved assistant checkpoint.
+- Reject discarding a purported continuation containing tool results, or a purported transport error containing native tool calls; reject arbitrary assistant/error lookalikes.
+- Regression-test long compacted histories, repeated failure artifacts and reply-anchor continuity without replaying previous tools.
+- Make the source/binary verification script use the same reproducible Go build flags as CI. No automatic promotion, no modification to existing native session checkpoints.
+
+
 ## 0.2.7 — non-prerelease release (2026-10-17)
 
 - Promote the verified v0.2.7-rc.4 payload to v0.2.7, without changing the shipped Go Runtime, MCP Helper or wrapper behavior.

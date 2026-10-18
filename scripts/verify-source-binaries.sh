@@ -6,7 +6,9 @@ trap 'rm -rf "$tmp"' EXIT
 for spec in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
   os="${spec%/*}"; arch="${spec#*/}"
   for name in magpie-tui-runtime magpie-tui-mcp-helper; do
-    (cd "$root/runtime" && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "$tmp/$name.$os-$arch" "./cmd/$name")
+    # Match the CI/release build contract exactly. buildvcs=auto embeds
+    # worktree-dependent VCS metadata and makes valid releases look stale.
+    (cd "$root/runtime" && GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$tmp/$name.$os-$arch" "./cmd/$name")
     cmp "$tmp/$name.$os-$arch" "$root/bin/$name.$os-$arch" >/dev/null || {
       echo "MISMATCH $name.$os-$arch — check Go toolchain and release source" >&2
       exit 1

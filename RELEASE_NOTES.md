@@ -1,4 +1,14 @@
-# v0.2.8-rc.1 — native tmux auto-compaction ownership fix
+# v0.2.8-rc.2 — bounded Desktop 502 companion recovery
+
+This is an **isolated candidate, not yet released or production deployed**. It builds on rc.1, without modifying Magpie's core or weakening MCP tool-result replay protection.
+
+The Runtime formerly skipped only the `dirty` form of a Desktop-generated continuation followed by a synthetic 502. `suffix_rejected` and several other recognized persisted-resume failures were left in the suffix as assistant messages, potentially causing the next attempt to return another `suffix_rejected`. The new handling recognizes *only* bounded, text-only `API Error: 502` records paired with the known synthetic Desktop continuation. Any embedded client tool result or native tool call, unrelated assistant message or unverified ordinary user turn still blocks unsafe resume.
+
+New regression tests verify original rejection → corrected continuation, unsafe tool-part negatives, repeated transport failures, and reply-anchor resume after historical compaction. The build-verification helper now uses the exact CI/release reproducibility flags (`-trimpath -buildvcs=false`).
+
+**Limits:** This does not automatically repair all previously failed real Desktop sessions. A `suffix_rejected` caused by an ordinary user turn, unmatched checkpoint, duplicate assistant anchors, unknown tool results, or a dead native MCP callback still fails closed. Native recovery of such a turn requires authenticated provenance of the failed request and may require explicit read-only recovery; blindly deleting an error message would be unsafe. Real 350–500K-token Desktop testing, multi-process NTT/GTT upgrades, SIGKILL and complete 80-minute waits remain separate acceptance gates, not claimed by this patch.
+
+## Previous candidate: v0.2.8-rc.1 — native tmux auto-compaction ownership fix
 
 This is an **experimental pre-release** of the distributable Claude TUI plugin, based on v0.2.7. It is not a claim that every long-session 502 is fixed.
 
