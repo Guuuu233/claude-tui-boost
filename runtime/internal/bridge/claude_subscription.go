@@ -3558,6 +3558,16 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	if err := validateInteractiveRequest(req); err != nil {
 		return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 	}
+	// A malformed, unreadable or replaced checkpoint file cannot be treated
+	// as an empty history. Reject before fallback/migration matching or
+	// starting any new native process against this outer conversation.
+	if outerSession != "" {
+		if err := rt.bridge.verifyInteractiveSessionStore(); err != nil {
+			log.Printf("Claude interactive checkpoint store integrity rejected: %v", err)
+			msg := "Claude interactive checkpoint store invalid; refusing native history replay"
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
+	}
 	if len(req.Safeguards) > 0 {
 		req.SafeguardBeta = "dangerous-tool-use-2026-09-03"
 		for _, beta := range strings.Split(r.Header.Get("anthropic-beta"), ",") {

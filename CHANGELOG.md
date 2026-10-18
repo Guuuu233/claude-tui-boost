@@ -7,6 +7,7 @@
 - Regression-test long compacted histories, repeated failure artifacts and reply-anchor continuity without replaying previous tools.
 - Require checkpoint/unique-reply-anchor verification before treating a Desktop-generated continuation as authorization for native `--resume`; fail closed on unrelated history, ambiguous anchors, old tools or uncommitted user requests.
 - Add a deterministic 120-turn checkpoint replay crossing four compacted-history rewrites and seven synthetic 502 transport artifacts. This is not a real model workload.
+- Fail closed if a persisted interactive checkpoint file exists but is invalid, unreadable, symlinked, world-readable or incompatible; never reinterpret a broken store as a new native conversation.
 - Make the source/binary verification script use the same reproducible Go build flags as CI. No automatic promotion, no modification to existing native session checkpoints.
 
 

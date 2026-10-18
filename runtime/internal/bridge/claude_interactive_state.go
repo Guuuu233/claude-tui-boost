@@ -112,6 +112,36 @@ func readInteractiveSessionState() interactiveSessionState {
 	return out
 }
 
+// readInteractiveSessionState intentionally returns an empty value for a
+// missing store, but a *present and malformed* store is not equivalent to a
+// new user session. Call this strict gate before any persisted conversation
+// may start a new PTY, so corrupted JSON cannot silently erase the owner of
+// an existing native transcript and trigger an unsafe historical bootstrap.
+func (b *subscriptionBridge) verifyInteractiveSessionStore() error {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	path := interactiveSessionStatePath()
+	fi, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checkpoint store cannot be examined: %w", err)
+	}
+	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 {
+		return errors.New("checkpoint store is not a private regular file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("checkpoint store cannot be read: %w", err)
+	}
+	var state interactiveSessionState
+	if json.Unmarshal(raw, &state) != nil || state.Version != interactiveSessionStateVersion || state.Sessions == nil {
+		return errors.New("checkpoint store is malformed or has an incompatible version")
+	}
+	return nil
+}
+
 func writeInteractiveSessionState(state interactiveSessionState) error {
 	dir := filepath.Dir(interactiveSessionStatePath())
 	if err := os.MkdirAll(dir, 0o700); err != nil {

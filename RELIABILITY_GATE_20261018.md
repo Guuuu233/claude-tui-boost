@@ -6,6 +6,10 @@ _2026-10-18; isolated source candidate v0.2.8-rc.2. Not a claim of parity with n
 
 In the follow-up audit, a 120-turn deterministic checkpoint replay (with four outer-history rewrites/compactions and seven synthetic transport failures) passed. This verifies only the *Go state transition and suffix-matching code*, not 120 real Claude turns or the content quality of any model-generated compacted summary.
 
+### Third audit: damaged persistence must not become a new conversation
+
+`readInteractiveSessionState` previously returned an empty map when the state file was present but invalid JSON, had an incompatible schema version or was missing the session map. Because callers treated missing entries as an unrecognized outer session, this could trigger native first-turn/historical bootstrap instead of reporting a damaged checkpoint. A regression test verified the unwanted start callback was reached for all three cases. Before parsing or allocating any native run, the gateway now checks file existence, schema, owner-private regular-file permissions and readability; a missing file remains valid for a truly fresh account, but an invalid existing file returns HTTP 409 and does **not** start a wrapper. The direct native start path performs the same strict check.
+
 ## Root-cause finding
 
 `restoreInteractiveSession` establishes an immutable native checkpoint and accepts only the safe new suffix. The helper `claudeDesktopFailedTurnCompanionReply` historically recognized synthetic Desktop 502 history for `dirty` only. A client-generated continuation followed by `suffix_rejected` therefore left an assistant error inside the suffix, which `safeConversationSuffixAfterDetailed` rejected. This creates a demonstrable failure-feedback loop with clean checkpoints. The original NTT failure's *first* trigger remains unverified without contemporaneous VPS logs.
@@ -23,6 +27,7 @@ After PR #6 initially went green, a second code audit found that `restoreInterac
 | Clean history, multiple user/assistant turns | Existing resume and checkpoint Go tests | 100+ uninterrupted interactive turns in one Desktop session |
 | Synthetic 502 `dirty`, `suffix_rejected`, other known restore failures | New red/green regression and repetition fixture | Capture failing NTT request shape and replay it in an isolated canary |
 | Generated Desktop continuation with drifted history | Five red cases before repair; checkpoint/anchor and budget-only-tail tests after | Observe a real interrupted Desktop continuation with authenticated native resume |
+| Corrupt/missing schema checkpoint file | Three red cases before repair; valid/absent file and private-file/symlink checks after | Test real isolated runtime restart with damaged 0600 checkpoint and verify no duplicate native runs |
 | Unknown assistant/error text, embedded old `tool_result`, tool call spoof | New rejection tests | Instrumented full tool callback traces; no duplicate side effects |
 | Long pre-compaction history / reply-anchor resume | New >1 MB UTF-8 fixture, plus existing structured compaction test | Actual 350K–500K-token Claude Desktop auto-compact and `/compact` |
 | tmux native `DISABLE_AUTO_COMPACT` inheritance | Existing real shell-launch test shipped in rc.1 | Inspect real NTT/GTT native child environment after idle deployment |

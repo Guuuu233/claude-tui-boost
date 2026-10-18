@@ -740,6 +740,11 @@ func (b *subscriptionBridge) startInteractiveAuxiliaryRequest(ctx context.Contex
 }
 
 func (b *subscriptionBridge) startInteractiveRequest(ctx context.Context, req *Request, model, configDir, owner, outerSession string) (*subscriptionRun, <-chan Event, error) {
+	if outerSession != "" {
+		if err := b.verifyInteractiveSessionStore(); err != nil {
+			return nil, nil, fmt.Errorf("Claude interactive checkpoint store invalid; refusing native history replay: %w", err)
+		}
+	}
 	shape, _, err := interactiveRequestWithoutSystem(req)
 	if err != nil {
 		return nil, nil, err
