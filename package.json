@@ -7,6 +7,7 @@
   "exports": "./index.mjs",
   "files": [
     "index.mjs",
+    "assets",
     "src",
     "runtime",
     "scripts",
@@ -65,5 +66,8 @@
   "homepage": "https://github.com/Guuuu233/magpie-claude-tui-plugin#readme",
   "bugs": {
     "url": "https://github.com/Guuuu233/magpie-claude-tui-plugin/issues"
+  },
+  "magpie": {
+    "icon": "https://raw.githubusercontent.com/Guuuu233/magpie-claude-tui-plugin/main/assets/claude-icon.svg"
   }
 }
