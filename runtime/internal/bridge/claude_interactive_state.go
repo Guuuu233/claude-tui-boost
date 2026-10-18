@@ -429,6 +429,28 @@ func claudeDesktopTurnCompanionSuffix(req *Request) []Message {
 	return nil
 }
 
+// A Desktop-generated interruption hint can only continue the saved native
+// thread if it is the *only semantic* post-checkpoint turn. Desktop may
+// interleave volatile token-budget system notices: permit only that known
+// generated form, not an assistant reply, old MCP result, other user
+// instruction, duplicate companion or arbitrary system message.
+func safeDesktopCompanionTail(msgs []Message) bool {
+	seen := false
+	for _, m := range msgs {
+		if claudeDesktopTurnCompanionMessage(m) {
+			if seen {
+				return false
+			}
+			seen = true
+			continue
+		}
+		if m.Role != "system" || len(withoutDynamicTokenBudgetNotices([]Message{m})) != 0 {
+			return false
+		}
+	}
+	return seen
+}
+
 func claudeDesktopFailedTurnCompanionReply(m Message) bool {
 	if m.Role != "assistant" || len(m.Parts) == 0 {
 		return false
@@ -476,7 +498,41 @@ func (b *subscriptionBridge) restoreInteractiveSession(owner, outerSession strin
 		return interactiveSessionEntry{}, nil, interactiveRestoreStateMissing
 	}
 	if suffix := claudeDesktopTurnCompanionSuffix(req); suffix != nil {
-		return saved, suffix, interactiveRestoreCompanion
+		// A recognizable last user message is not sufficient evidence to
+		// resume a native session. Validate the saved conversation hash or
+		// unique last-reply anchor *before* skipping any outer history.
+		// This applies even to a dirty checkpoint: an unrelated client or
+		// previously completed tool result must never bypass this check.
+		try := func(since []Message, status conversationSuffixStatus) (interactiveRestoreStatus, bool) {
+			switch status {
+			case conversationSuffixOK:
+				if safeDesktopCompanionTail(since) {
+					return interactiveRestoreCompanion, true
+				}
+				return interactiveRestoreSuffixRejected, true
+			case conversationSuffixRejected:
+				return interactiveRestoreSuffixRejected, true
+			default:
+				return interactiveRestoreCheckpointNotFound, false
+			}
+		}
+		since, status := conversationSuffixAfterDetailed(owner, req.Messages, saved.ConvKey)
+		if decided, found := try(since, status); found {
+			if decided == interactiveRestoreCompanion {
+				return saved, suffix, decided
+			}
+			return saved, nil, decided
+		}
+		if saved.ReplyKey != "" {
+			since, status = conversationSuffixAfterReplyDetailed(req.Messages, saved.ReplyKey)
+			if decided, found := try(since, status); found {
+				if decided == interactiveRestoreCompanion {
+					return saved, suffix, decided
+				}
+				return saved, nil, decided
+			}
+		}
+		return saved, nil, interactiveRestoreCheckpointNotFound
 	}
 	if saved.Dirty {
 		return saved, nil, interactiveRestoreDirty

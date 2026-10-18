@@ -5,6 +5,8 @@
 - Recognize a narrow set of persisted-resume 502 failures (`suffix_rejected` included) when and only when paired with a tool-free Desktop-generated continuation after the saved assistant checkpoint.
 - Reject discarding a purported continuation containing tool results, or a purported transport error containing native tool calls; reject arbitrary assistant/error lookalikes.
 - Regression-test long compacted histories, repeated failure artifacts and reply-anchor continuity without replaying previous tools.
+- Require checkpoint/unique-reply-anchor verification before treating a Desktop-generated continuation as authorization for native `--resume`; fail closed on unrelated history, ambiguous anchors, old tools or uncommitted user requests.
+- Add a deterministic 120-turn checkpoint replay crossing four compacted-history rewrites and seven synthetic 502 transport artifacts. This is not a real model workload.
 - Make the source/binary verification script use the same reproducible Go build flags as CI. No automatic promotion, no modification to existing native session checkpoints.
 
 
