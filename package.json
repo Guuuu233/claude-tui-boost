@@ -1,7 +1,7 @@
 {
   "name": "magpie-claude-tui-plugin",
   "version": "0.2.8-rc.1",
-  "description": "Unofficial self-hosted Claude Code TUI provider for Magpie/OpenCode (independent, unreviewed third-party plugin)",
+  "description": "通过真正的 Claude Code 交互式 TUI 接入 Magpie/OpenCode，支持 MCP 工具安全续接与长会话；Opus 5.5 对照实测订阅额度利用效率约为 claude -p 的 1.8～2 倍。",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
