@@ -1,6 +1,8 @@
-# v0.2.8-rc.3 — checkpoint lookup and launch barriers
+# v0.2.8 — Claude Desktop continuity and checkpoint safety
 
-Candidate only. Every production checkpoint lookup now uses the same bounded strict reader as mutations and propagates corruption as an error. A failed dirty-marker write (including a missing checkpoint) prevents the native child from starting. Checkpoint commits sync the temporary file before rename and the containing directory after rename; a failed rename never deletes the previous checkpoint. Updates larger than 16 MiB are rejected before replacement.
+Stable package release of the rc.3 candidate, retaining its underlying Runtime and MCP Helper behavior. The implementation remains unofficial and experimental for complex long-lived Desktop sessions. Limits listed below are still open and are not waived by the stable version label.
+
+ Every production checkpoint lookup now uses the same bounded strict reader as mutations and propagates corruption as an error. A failed dirty-marker write (including a missing checkpoint) prevents the native child from starting. Checkpoint commits sync the temporary file before rename and the containing directory after rename; a failed rename never deletes the previous checkpoint. Updates larger than 16 MiB are rejected before replacement.
 
 Desktop compaction can also change the first user message while the Runtime remembers the old prefix. Previously that prefix mismatch diverted even a valid unique-reply-anchor continuation to an ephemeral helper session. A verified canonical continuation now keeps the original native session and updates the remembered prefix. Unrelated and different-model helper requests retain their isolation.
 

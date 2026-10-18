@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8 — stable package release (2026-10-18)
+
+- Promote the reviewed v0.2.8-rc.3 behavior to a non-prerelease installable package after merging PR #6; preserve the compiled Go Runtime and MCP Helper.
+- Include the checkpoint integrity, safe Desktop continuation and tmux auto-compaction improvements developed across rc.1–rc.3, plus existing plugin icon assets.
+- Keep documented limitations: real 350–500K-token Desktop recovery, abnormal termination during tool execution and the complete 80-minute MCP wait are not guaranteed by this release. Preserve fail-closed behavior for uncertain tool results.
+
+
 ## 0.2.8-rc.3 — checkpoint lookup and launch barriers (2026-10-18)
 
 - Use bounded strict checkpoint reads at every production lookup; report damage separately from an absent conversation even after a successful ingress preflight.
