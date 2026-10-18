@@ -75,7 +75,7 @@ func TestInteractiveCheckpointStoreRejectsInvalidVersionAndPrunesOld(t *testing.
 	}
 	state := interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: map[string]interactiveSessionEntry{
 		"old": {SessionID: "old", UpdatedAt: time.Now().Add(-31 * 24 * time.Hour)},
-		"new": {SessionID: "new", UpdatedAt: time.Now()},
+		"new": {SessionID: "new", ConvKey: "conv", ContextKey: "context", UpdatedAt: time.Now()},
 	}}
 	if err := writeInteractiveSessionState(state); err != nil {
 		t.Fatal(err)

@@ -740,6 +740,12 @@ func (b *subscriptionBridge) startInteractiveAuxiliaryRequest(ctx context.Contex
 }
 
 func (b *subscriptionBridge) startInteractiveRequest(ctx context.Context, req *Request, model, configDir, owner, outerSession string) (*subscriptionRun, <-chan Event, error) {
+	if outerSession != "" {
+		if err := b.verifyInteractiveSessionStore(); err != nil {
+			log.Printf("Claude interactive start rejected checkpoint store: %v", err)
+			return nil, nil, errInteractiveSessionStoreInvalid
+		}
+	}
 	shape, _, err := interactiveRequestWithoutSystem(req)
 	if err != nil {
 		return nil, nil, err
@@ -766,11 +772,24 @@ func (b *subscriptionBridge) startInteractiveRequest(ctx context.Context, req *R
 
 	thread := firstWords(req)
 	active := b.outerThread(owner, outerSession)
-	if active != "" && active != thread {
-		return b.startInteractiveAuxiliaryRequest(ctx, req, model, configDir, owner)
+	saved, savedOK, err := b.loadInteractiveSession(owner, outerSession)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	saved, savedOK := b.interactiveSession(owner, outerSession)
+	if active != "" && active != thread {
+		// firstWords is only a helper-thread heuristic: Desktop compaction
+		// can rewrite that prefix on the canonical conversation. Let a
+		// verified checkpoint/unique reply anchor take precedence. Unrelated
+		// helpers (including other models) still cannot advance its state.
+		_, _, status := b.restoreInteractiveSession(owner, outerSession, req)
+		verified := status == interactiveRestoreExact || status == interactiveRestoreReplyAnchor || status == interactiveRestoreCompanion
+		if status == interactiveRestoreStateInvalid {
+			return nil, nil, errInteractiveSessionStoreInvalid
+		}
+		if !verified || (saved.Model != "" && saved.Model != model) {
+			return b.startInteractiveAuxiliaryRequest(ctx, req, model, configDir, owner)
+		}
+	}
 	if !savedOK {
 		owned := b.claimInteractiveOuterSession(owner, outerSession, req)
 		if owned != "" {
@@ -884,10 +903,28 @@ func (b *subscriptionBridge) startInteractiveRequest(ctx context.Context, req *R
 			if b.seedOuterThread(owner, outerSession, thread) != thread {
 				return nil, nil, errors.New("Claude interactive persisted resume failed: outer thread changed")
 			}
+		} else if active != thread {
+			// Rebind only after authoritative restore validation and the live
+			// owner fence above, while the canonical request owns its turn.
+			key := interactiveSessionStateKey(owner, outerSession)
+			b.mu.Lock()
+			unchanged := b.outerThreads[key] == active
+			if unchanged {
+				b.outerThreads[key] = thread
+			}
+			b.mu.Unlock()
+			if !unchanged {
+				return nil, nil, errors.New("Claude interactive persisted resume failed: outer thread changed")
+			}
 		}
 		contextChanged := saved.ContextKey != "" && saved.ContextKey != turnKey(owner, req, nil)
 		return b.startInteractiveResumeTurn(ctx, req, model, configDir, owner, outerSession, saved, since, contextChanged)
 	default:
+		if status == interactiveRestoreStateInvalid {
+			return nil, nil, errInteractiveSessionStoreInvalid
+		}
+		log.Printf("Claude interactive persisted resume rejected: reason=%s %s", status,
+			interactiveRestoreRejectionDiagnostic(saved, req))
 		return nil, nil, fmt.Errorf("Claude interactive persisted resume failed: %s; refusing full history replay", status)
 	}
 }
@@ -1333,7 +1370,12 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 			// existing checkpoint, resumed inner session, or recovery MUST
 			// already have a marker from its original Wrapper. Otherwise an
 			// older uninstrumented tmux pane could still be running.
-			_, hadCheckpoint := b.interactiveSession(owner, outerSession)
+			_, hadCheckpoint, lookupErr := b.loadInteractiveSession(owner, outerSession)
+			if lookupErr != nil {
+				releaseInteractiveNativeLease(nativeLease)
+				clean()
+				return nil, nil, lookupErr
+			}
 			required := hadCheckpoint || resumeID != "" || readOnly
 			// A one-off, certificate-verified legacy migration must establish
 			// the first native ownership marker for this existing conversation.
@@ -1368,7 +1410,11 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 		// Before the resume's first possible side effect, the canonical
 		// checkpoint becomes dirty. In ledger mode the lease above prevents
 		// a second Runtime from dirtying another process's clean result.
-		b.markInteractiveSessionDirty(owner, outerSession)
+		if err := b.markInteractiveSessionDirty(owner, outerSession); err != nil {
+			clean()
+			log.Printf("Claude interactive resume blocked before native start: %v", err)
+			return nil, nil, errInteractiveSessionStoreInvalid
+		}
 	}
 	// Desktop (and any client providing a stable outer session) owns its
 	// conversation and issues its own /compact. The private native Claude Code

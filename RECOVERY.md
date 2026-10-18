@@ -2,6 +2,18 @@
 
 The plugin handles interrupted native Claude interactive sessions conservatively. When tool execution or delivery is uncertain, the runtime returns HTTP 409 rather than replaying `Write`, `Edit`, `Bash`, or another client-side tool.
 
+## Checkpoint integrity and empty retries (v0.2.8-rc.3 candidate)
+
+All checkpoint lookups validate the file at the point of use. Invalid, insecure or oversized state returns HTTP 409; it must not be treated as a new conversation. A native resume also stops if its dirty checkpoint cannot be persisted before launch. Preserve damaged state for investigation rather than deleting it to force a fresh session.
+
+If the client resends exactly a known generated continuation followed by its synthetic error, with no new user content, removing that failed pair leaves an empty suffix. This remains a deliberate refusal and is regression-tested. A client error is not evidence that an ordinary task or tool was never executed; automatic replay remains prohibited without execution provenance.
+
+## Known persisted-resume 502 feedback (v0.2.8-rc.2 candidate)
+
+On a **clean, completed checkpoint**, Desktop can append an automatically generated continuation and a synthetic HTTP 502 if that continuation failed before the native Claude process started. A later ordinary user turn may then present that synthetic assistant error inside the historical suffix. The plugin can skip the strictly identified, text-only continuation/error pair; it cannot skip arbitrary error messages, old `tool_result`, model-authored responses or an ordinary user turn that failed for an unknown reason. This safety boundary deliberately prevents skipping work that might already have occurred.
+
+The `suffix_rejected` text alone does not establish *why* the original request's history diverged. If the first error involved a real tool result, an unmatched native checkpoint, a missing live callback, or a full Desktop `/compact` rewrite, automatic seamless continuation is not guaranteed. Do not repeatedly Retry/Replay an unknown side-effecting tool. Keep the original Desktop transcript, diagnose the checkpoint and use a deliberate tool-free recovery or a new conversation after read-only verification as appropriate.
+
 Recovery is **off by default**. Optional features include a bounded, checksummed native tool journal (`MAGPIE_CLAUDE_DURABLE_TOOL_JOURNAL=1`), guarded orphan reconstruction (`MAGPIE_CLAUDE_AUTO_RECOVER_ORPHANS=1`), and process/pane fencing (`MAGPIE_CLAUDE_NATIVE_TMUX_GUARD=1`). Optional read-only retry after a crash uses `MAGPIE_CLAUDE_AUTO_RECOVER_RETRY=1`, and first-turn dirty anchors use `MAGPIE_CLAUDE_FIRST_TURN_ANCHOR=1`. No combination of these flags authorizes replay of uncertain side effects.
 
 The runtime uses a per-conversation native process lock inherited by the Wrapper, as well as a private tmux owner marker with the socket-environment fingerprint. If an earlier native process is still active, or its liveness cannot be proven, automatic recovery fails closed. First-turn anchors require an authentic native Session ID and a registered tool callback; completed recovery writes a new clean checkpoint.

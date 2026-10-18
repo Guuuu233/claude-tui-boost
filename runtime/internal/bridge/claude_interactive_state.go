@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ const (
 	interactiveRestoreReplyAnchor        interactiveRestoreStatus = "reply_anchor"
 	interactiveRestoreCompanion          interactiveRestoreStatus = "turn_companion"
 	interactiveRestoreStateMissing       interactiveRestoreStatus = "state_missing"
+	interactiveRestoreStateInvalid       interactiveRestoreStatus = "state_invalid"
 	interactiveRestoreDirty              interactiveRestoreStatus = "dirty"
 	interactiveRestoreContextMismatch    interactiveRestoreStatus = "context_mismatch"
 	interactiveRestoreCheckpointNotFound interactiveRestoreStatus = "checkpoint_not_found"
@@ -100,16 +102,66 @@ func interactiveSessionWorkDir(owner, outerSession string) (string, error) {
 	return dir, nil
 }
 
-func readInteractiveSessionState() interactiveSessionState {
-	out := interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: map[string]interactiveSessionEntry{}}
-	b, err := os.ReadFile(interactiveSessionStatePath())
+// Reads and mutations use the same bounded validator under stateMu. A
+// preflight cannot protect a later lookup from a replaced/truncated file;
+// a damaged store must never become a missing conversation.
+const maxInteractiveSessionStoreBytes = 16 << 20
+
+var errInteractiveSessionStoreInvalid = errors.New("Claude interactive checkpoint store invalid; refusing native history replay")
+
+func loadInteractiveSessionStateStrict() (interactiveSessionState, error) {
+	empty := interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: make(map[string]interactiveSessionEntry)}
+	path := interactiveSessionStatePath()
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, nil
+	}
 	if err != nil {
-		return out
+		return empty, fmt.Errorf("checkpoint store stat failed: %w", err)
 	}
-	if json.Unmarshal(b, &out) != nil || out.Version != interactiveSessionStateVersion || out.Sessions == nil {
-		return interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: map[string]interactiveSessionEntry{}}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return empty, errors.New("checkpoint store is not a private regular file")
 	}
-	return out
+	if info.Size() > maxInteractiveSessionStoreBytes {
+		return empty, errors.New("checkpoint store exceeds size limit")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return empty, fmt.Errorf("checkpoint store open failed: %w", err)
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return empty, errors.New("checkpoint store changed during open")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxInteractiveSessionStoreBytes+1))
+	if err != nil {
+		return empty, fmt.Errorf("checkpoint store read failed: %w", err)
+	}
+	if len(raw) > maxInteractiveSessionStoreBytes {
+		return empty, errors.New("checkpoint store exceeds size limit")
+	}
+	var state interactiveSessionState
+	if json.Unmarshal(raw, &state) != nil || state.Version != interactiveSessionStateVersion || state.Sessions == nil {
+		return empty, errors.New("checkpoint store is malformed or has an incompatible version")
+	}
+	for _, entry := range state.Sessions {
+		// ReplyKey is optional for a dirty first-tool anchor, but these
+		// three fields are mandatory for both clean and dirty checkpoints.
+		// An empty nested JSON object is not a valid older native session.
+		if entry.SessionID == "" || entry.ConvKey == "" || entry.ContextKey == "" {
+			return empty, errors.New("checkpoint store contains an incomplete session entry")
+		}
+	}
+	return state, nil
+}
+
+// Check before matching live runs as well as at each later state lookup.
+func (b *subscriptionBridge) verifyInteractiveSessionStore() error {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	_, err := loadInteractiveSessionStateStrict()
+	return err
 }
 
 func writeInteractiveSessionState(state interactiveSessionState) error {
@@ -130,6 +182,9 @@ func writeInteractiveSessionState(state interactiveSessionState) error {
 	if err != nil {
 		return err
 	}
+	if len(b) > maxInteractiveSessionStoreBytes {
+		return errors.New("checkpoint update exceeds store size limit")
+	}
 	tmp, err := os.CreateTemp(dir, ".claude-interactive-sessions-*")
 	if err != nil {
 		return err
@@ -144,29 +199,38 @@ func writeInteractiveSessionState(state interactiveSessionState) error {
 		tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 	if err := os.Rename(name, interactiveSessionStatePath()); err != nil {
-		// Windows cannot replace an existing file with Rename. The experimental
-		// backend is primarily Unix/PTY based, but keep the state helper portable.
-		_ = os.Remove(interactiveSessionStatePath())
-		if err2 := os.Rename(name, interactiveSessionStatePath()); err2 != nil {
-			return err
-		}
+		// Never delete the last checkpoint to retry a failed replacement.
+		return err
 	}
-	return nil
+	parent, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return parent.Sync()
 }
 
-func (b *subscriptionBridge) interactiveSession(owner, outerSession string) (interactiveSessionEntry, bool) {
+func (b *subscriptionBridge) loadInteractiveSession(owner, outerSession string) (interactiveSessionEntry, bool, error) {
 	if outerSession == "" {
-		return interactiveSessionEntry{}, false
+		return interactiveSessionEntry{}, false, nil
 	}
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	state := readInteractiveSessionState()
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		log.Printf("Claude interactive checkpoint lookup rejected: %v", err)
+		return interactiveSessionEntry{}, false, errInteractiveSessionStoreInvalid
+	}
 	e, ok := state.Sessions[interactiveSessionStateKey(owner, outerSession)]
-	return e, ok
+	return e, ok, nil
 }
 
 func (b *subscriptionBridge) saveInteractiveSession(owner, outerSession string, e interactiveSessionEntry) error {
@@ -175,7 +239,10 @@ func (b *subscriptionBridge) saveInteractiveSession(owner, outerSession string, 
 	}
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	state := readInteractiveSessionState()
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		return fmt.Errorf("refusing to overwrite checkpoint store: %w", err)
+	}
 	e.UpdatedAt = time.Now().UTC()
 	state.Sessions[interactiveSessionStateKey(owner, outerSession)] = e
 	if err := writeInteractiveSessionState(state); err != nil {
@@ -198,16 +265,10 @@ func (r *subscriptionRun) persistFirstToolAnchorLocked() error {
 	b := r.bridge
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	path := interactiveSessionStatePath()
-	if raw, err := os.ReadFile(path); err == nil {
-		var checked interactiveSessionState
-		if json.Unmarshal(raw, &checked) != nil || checked.Version != interactiveSessionStateVersion || checked.Sessions == nil {
-			return errors.New("existing checkpoint store is invalid; refusing first-turn anchor")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		return fmt.Errorf("refusing first-turn anchor: %w", err)
 	}
-	state := readInteractiveSessionState()
 	key := interactiveSessionStateKey(r.owner, r.outerSession)
 	if old, ok := state.Sessions[key]; ok {
 		if old.SessionID == r.sessionID && old.Dirty && old.ConvKey == r.firstTurnAnchorKey && old.ReplyKey == "" {
@@ -223,24 +284,31 @@ func (r *subscriptionRun) persistFirstToolAnchorLocked() error {
 	return writeInteractiveSessionState(state)
 }
 
-func (b *subscriptionBridge) markInteractiveSessionDirty(owner, outerSession string) {
+func (b *subscriptionBridge) markInteractiveSessionDirty(owner, outerSession string) error {
 	if outerSession == "" {
-		return
+		return nil
 	}
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	state := readInteractiveSessionState()
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		return fmt.Errorf("refusing dirty update: %w", err)
+	}
 	key := interactiveSessionStateKey(owner, outerSession)
 	e, ok := state.Sessions[key]
-	if !ok || e.Dirty {
-		return
+	if !ok {
+		return errors.New("checkpoint missing; refusing native resume without dirty state")
+	}
+	if e.Dirty {
+		return nil
 	}
 	e.Dirty = true
 	e.UpdatedAt = time.Now().UTC()
 	state.Sessions[key] = e
 	if err := writeInteractiveSessionState(state); err != nil {
-		log.Printf("Claude interactive session state: %v", err)
+		return fmt.Errorf("persisting dirty checkpoint: %w", err)
 	}
+	return nil
 }
 
 // claimInteractiveOuterTurn gives one in-flight interactive turn per
@@ -395,6 +463,13 @@ func claudeDesktopTurnCompanionMessage(m Message) bool {
 	if m.Role != "user" {
 		return false
 	}
+	// A synthetic continuation must never smuggle a client-side tool
+	// result into a segment that the resume checker may discard.
+	for _, p := range m.Parts {
+		if p.Kind != Text {
+			return false
+		}
+	}
 	for _, p := range m.Parts {
 		if p.Kind != Text {
 			continue
@@ -422,31 +497,113 @@ func claudeDesktopTurnCompanionSuffix(req *Request) []Message {
 	return nil
 }
 
+// A Desktop-generated interruption hint can only continue the saved native
+// thread if it is the *only semantic* post-checkpoint turn. Desktop may
+// interleave volatile token-budget system notices: permit only that known
+// generated form, not an assistant reply, old MCP result, other user
+// instruction, duplicate companion or arbitrary system message.
+func safeDesktopCompanionTail(msgs []Message) bool {
+	seen := false
+	for _, m := range msgs {
+		if claudeDesktopTurnCompanionMessage(m) {
+			if seen {
+				return false
+			}
+			seen = true
+			continue
+		}
+		if m.Role != "system" || len(withoutDynamicTokenBudgetNotices([]Message{m})) != 0 {
+			return false
+		}
+	}
+	return seen
+}
+
 func claudeDesktopFailedTurnCompanionReply(m Message) bool {
-	if m.Role != "assistant" {
+	if m.Role != "assistant" || len(m.Parts) == 0 {
 		return false
 	}
 	var text strings.Builder
 	for _, p := range m.Parts {
-		if p.Kind == Text {
-			text.WriteString(p.Text)
+		if p.Kind != Text {
+			// This recognition is used to *discard* a failed transport
+			// artifact. Never discard an actual tool call or image.
+			return false
+		}
+		text.WriteString(p.Text)
+		if text.Len() > 8192 {
+			return false
 		}
 	}
 	s := strings.TrimSpace(text.String())
-	return strings.HasPrefix(s, "API Error: 502 ") &&
-		strings.Contains(s, "Claude interactive persisted resume failed: dirty; refusing full history replay")
+	if !strings.HasPrefix(s, "API Error: 502 ") {
+		return false
+	}
+	// A clean checkpoint can reject a Desktop-generated follow-up for
+	// several reasons. In all these cases startInteractiveRequest exited
+	// before starting a new native run. Restrict the elision to the known
+	// transport signature and a synthetic, tool-free Desktop companion.
+	for _, reason := range []interactiveRestoreStatus{
+		interactiveRestoreDirty,
+		interactiveRestoreSuffixRejected,
+		interactiveRestoreCheckpointNotFound,
+		interactiveRestoreContextMismatch,
+		interactiveRestoreStateMissing,
+	} {
+		if strings.Contains(s, "Claude interactive persisted resume failed: "+string(reason)+"; refusing full history replay") {
+			return true
+		}
+	}
+	return false
 }
 
 // restoreInteractiveSession decides whether a persisted inner Claude session
 // can safely accept only the caller's new suffix. It never authorizes replay
 // of the entire outer history.
 func (b *subscriptionBridge) restoreInteractiveSession(owner, outerSession string, req *Request) (interactiveSessionEntry, []Message, interactiveRestoreStatus) {
-	saved, ok := b.interactiveSession(owner, outerSession)
+	saved, ok, err := b.loadInteractiveSession(owner, outerSession)
+	if err != nil {
+		return interactiveSessionEntry{}, nil, interactiveRestoreStateInvalid
+	}
 	if !ok {
 		return interactiveSessionEntry{}, nil, interactiveRestoreStateMissing
 	}
 	if suffix := claudeDesktopTurnCompanionSuffix(req); suffix != nil {
-		return saved, suffix, interactiveRestoreCompanion
+		// A recognizable last user message is not sufficient evidence to
+		// resume a native session. Validate the saved conversation hash or
+		// unique last-reply anchor *before* skipping any outer history.
+		// This applies even to a dirty checkpoint: an unrelated client or
+		// previously completed tool result must never bypass this check.
+		try := func(since []Message, status conversationSuffixStatus) (interactiveRestoreStatus, bool) {
+			switch status {
+			case conversationSuffixOK:
+				if safeDesktopCompanionTail(since) {
+					return interactiveRestoreCompanion, true
+				}
+				return interactiveRestoreSuffixRejected, true
+			case conversationSuffixRejected:
+				return interactiveRestoreSuffixRejected, true
+			default:
+				return interactiveRestoreCheckpointNotFound, false
+			}
+		}
+		since, status := conversationSuffixAfterDetailed(owner, req.Messages, saved.ConvKey)
+		if decided, found := try(since, status); found {
+			if decided == interactiveRestoreCompanion {
+				return saved, suffix, decided
+			}
+			return saved, nil, decided
+		}
+		if saved.ReplyKey != "" {
+			since, status = conversationSuffixAfterReplyDetailed(req.Messages, saved.ReplyKey)
+			if decided, found := try(since, status); found {
+				if decided == interactiveRestoreCompanion {
+					return saved, suffix, decided
+				}
+				return saved, nil, decided
+			}
+		}
+		return saved, nil, interactiveRestoreCheckpointNotFound
 	}
 	if saved.Dirty {
 		return saved, nil, interactiveRestoreDirty

@@ -333,8 +333,8 @@ func cleanCheckpointNewUserSuffix(b *subscriptionBridge, owner, outer, model str
 	if b == nil || outer == "" || req == nil {
 		return false
 	}
-	saved, ok := b.interactiveSession(owner, outer)
-	if !ok || saved.Dirty || saved.SessionID == "" || saved.ReplyKey == "" || (saved.Model != "" && saved.Model != model) {
+	saved, ok, err := b.loadInteractiveSession(owner, outer)
+	if err != nil || !ok || saved.Dirty || saved.SessionID == "" || saved.ReplyKey == "" || (saved.Model != "" && saved.Model != model) {
 		return false
 	}
 	_, suffix, status := b.restoreInteractiveSession(owner, outer, req)

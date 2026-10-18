@@ -3558,6 +3558,16 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	if err := validateInteractiveRequest(req); err != nil {
 		return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 	}
+	// A malformed, unreadable or replaced checkpoint file cannot be treated
+	// as an empty history. Reject before fallback/migration matching or
+	// starting any new native process against this outer conversation.
+	if outerSession != "" {
+		if err := rt.bridge.verifyInteractiveSessionStore(); err != nil {
+			log.Printf("Claude interactive checkpoint store integrity rejected: %v", err)
+			msg := "Claude interactive checkpoint store invalid; refusing native history replay"
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
+	}
 	if len(req.Safeguards) > 0 {
 		req.SafeguardBeta = "dangerous-tool-use-2026-09-03"
 		for _, beta := range strings.Split(r.Header.Get("anthropic-beta"), ",") {
@@ -3613,7 +3623,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if run == nil && outerSession != "" {
-		_, hasSaved := rt.bridge.interactiveSession(owner, outerSession)
+		_, hasSaved, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
+		if lookupErr != nil {
+			msg := errInteractiveSessionStoreInvalid.Error()
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
 		if !hasSaved {
 			var legacyEligible bool
 			legacyPrompt, legacyEligible, err = eligibleLegacyMigration(owner, outerSession, model, req)
@@ -3685,7 +3699,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			msg := "Claude interactive orphan recovery requires native tmux process fencing"
 			return writeError(w, from, http.StatusConflict, msg), msg
 		}
-		saved, ok := rt.bridge.interactiveSession(owner, outerSession)
+		saved, ok, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
+		if lookupErr != nil {
+			msg := errInteractiveSessionStoreInvalid.Error()
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
 		if ok && saved.Dirty && (saved.Model == "" || saved.Model == model) &&
 			validateInteractiveToolContinuation(req) == nil {
 			if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
@@ -3734,7 +3752,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if run == nil && optInCurrent >= 0 && outerSession != "" && !recoveryClaimed {
-		saved, ok := rt.bridge.interactiveSession(owner, outerSession)
+		saved, ok, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
+		if lookupErr != nil {
+			msg := errInteractiveSessionStoreInvalid.Error()
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
 		if ok && saved.Dirty && (saved.Model == "" || saved.Model == model) {
 			if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
 				msg := "Claude interactive recovery already in flight"
@@ -3758,7 +3780,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if recoveryIdx >= 0 && run == nil && outerSession != "" {
-		saved, savedOK := rt.bridge.interactiveSession(owner, outerSession)
+		saved, savedOK, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
+		if lookupErr != nil {
+			msg := errInteractiveSessionStoreInvalid.Error()
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
 		if savedOK && saved.Dirty && (saved.Model == "" || saved.Model == model) {
 			req = interactiveSanitizeReadOnly(req)
 		}
@@ -3825,7 +3851,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			sameSafeguards := bytes.Equal(run.safeguards, req.Safeguards) &&
 				(len(req.Safeguards) == 0 || run.safeguardBeta == req.SafeguardBeta)
 			run.mu.Unlock()
-			saved, checkpointExists := rt.bridge.interactiveSession(owner, outerSession)
+			saved, checkpointExists, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
+			if lookupErr != nil {
+				msg := errInteractiveSessionStoreInvalid.Error()
+				return writeError(w, from, http.StatusConflict, msg), msg
+			}
 			if os.Getenv("MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT") == "1" &&
 				how == byExactID && outerSession != "" && run.outerSession == outerSession &&
 				run.owner == owner && run.model == model &&
@@ -3965,7 +3995,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		if recoveryCurrent >= 0 && recoveryCurrent < len(req.Messages)-1 {
 			req.Messages = interactiveRecoveryMessages(req, recoveryCurrent)
 		}
-		saved, savedOK := rt.bridge.interactiveSession(owner, outerSession)
+		saved, savedOK, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
+		if lookupErr != nil {
+			msg := errInteractiveSessionStoreInvalid.Error()
+			return writeError(w, from, http.StatusConflict, msg), msg
+		}
 		readOnly := legacyApproved || (recoveryIdx >= 0 && savedOK && saved.Dirty && outerSession != "")
 		// One in-flight interactive turn per outer conversation, whatever
 		// kind it is. An opt-in recovery turn and an ordinary start are the
@@ -4012,7 +4046,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if err != nil {
-		if errors.Is(err, errInteractiveOuterLive) || errors.Is(err, errInteractiveTerminalBusy) {
+		if errors.Is(err, errInteractiveOuterLive) || errors.Is(err, errInteractiveTerminalBusy) || errors.Is(err, errInteractiveSessionStoreInvalid) {
 			return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 		}
 		return writeError(w, from, 502, name+": "+err.Error()), err.Error()

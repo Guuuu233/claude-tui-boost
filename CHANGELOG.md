@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.8-rc.3 — checkpoint lookup and launch barriers (2026-10-18)
+
+- Use bounded strict checkpoint reads at every production lookup; report damage separately from an absent conversation even after a successful ingress preflight.
+- Keep canonical native continuity when Desktop compacts the first user message while the Runtime is still running; a verified checkpoint/reply anchor takes precedence over the auxiliary-thread prefix heuristic.
+- Abort native resume before child start when its dirty checkpoint cannot be saved or has disappeared; return a recovery-required HTTP 409 instead of a misleading transport 502.
+- Sync checkpoint contents and the parent directory, preserve the previous file if replacement fails, and reject updates that would exceed the reader's size limit.
+- Cover original companion/error retries with no new user content: keep refusing an empty suffix rather than re-executing the old turn.
+
+## 0.2.8-rc.2 — isolated recovery candidate (2026-10-18)
+
+- Recognize a narrow set of persisted-resume 502 failures (`suffix_rejected` included) when and only when paired with a tool-free Desktop-generated continuation after the saved assistant checkpoint.
+- Reject discarding a purported continuation containing tool results, or a purported transport error containing native tool calls; reject arbitrary assistant/error lookalikes.
+- Regression-test long compacted histories, repeated failure artifacts and reply-anchor continuity without replaying previous tools.
+- Require checkpoint/unique-reply-anchor verification before treating a Desktop-generated continuation as authorization for native `--resume`; fail closed on unrelated history, ambiguous anchors, old tools or uncommitted user requests.
+- Add a deterministic 120-turn checkpoint replay crossing four compacted-history rewrites and seven synthetic 502 transport artifacts. This is not a real model workload.
+- Fail closed if a persisted interactive checkpoint file exists but is invalid, unreadable, symlinked, world-readable or incompatible; never reinterpret a broken store as a new native conversation.
+- Validate on-disk checkpoint state again **under the write lock** before any terminal checkpoint, dirty marker or first-tool anchor is saved. An invalid, incomplete or oversized store can no longer be silently replaced even if corruption happens after request preflight.
+- Emit privacy-bounded structural restore diagnostics only on refusal; distinguish missing or repeated reply anchors, intervening assistant messages and stale tool results without logging message contents, IDs, arguments or hashes. Avoid rehashing the full history on errors to limit extra memory pressure.
+- Make the source/binary verification script use the same reproducible Go build flags as CI. No automatic promotion, no modification to existing native session checkpoints.
+
+
 ## 0.2.7 — non-prerelease release (2026-10-17)
 
 - Promote the verified v0.2.7-rc.4 payload to v0.2.7, without changing the shipped Go Runtime, MCP Helper or wrapper behavior.
