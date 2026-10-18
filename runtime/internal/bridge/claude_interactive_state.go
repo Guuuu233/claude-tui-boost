@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -112,6 +113,61 @@ func readInteractiveSessionState() interactiveSessionState {
 	return out
 }
 
+// Every checkpoint *mutation* must load a validated prior state while
+// stateMu is held. A separate request preflight cannot protect a later
+// write from a replaced/truncated file or an internal callback: the old
+// permissive reader turned those failures into an empty checkpoint map.
+// Keep it separate from the legacy best-effort reader for older read-only
+// users; do not ever use that reader to overwrite persisted state.
+const maxInteractiveSessionStoreBytes = 16 << 20
+
+func loadInteractiveSessionStateStrict() (interactiveSessionState, error) {
+	empty := interactiveSessionState{Version: interactiveSessionStateVersion, Sessions: make(map[string]interactiveSessionEntry)}
+	path := interactiveSessionStatePath()
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, nil
+	}
+	if err != nil {
+		return empty, fmt.Errorf("checkpoint store stat failed: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return empty, errors.New("checkpoint store is not a private regular file")
+	}
+	if info.Size() > maxInteractiveSessionStoreBytes {
+		return empty, errors.New("checkpoint store exceeds size limit")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return empty, fmt.Errorf("checkpoint store open failed: %w", err)
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return empty, errors.New("checkpoint store changed during open")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxInteractiveSessionStoreBytes+1))
+	if err != nil {
+		return empty, fmt.Errorf("checkpoint store read failed: %w", err)
+	}
+	if len(raw) > maxInteractiveSessionStoreBytes {
+		return empty, errors.New("checkpoint store exceeds size limit")
+	}
+	var state interactiveSessionState
+	if json.Unmarshal(raw, &state) != nil || state.Version != interactiveSessionStateVersion || state.Sessions == nil {
+		return empty, errors.New("checkpoint store is malformed or has an incompatible version")
+	}
+	for _, entry := range state.Sessions {
+		// ReplyKey is optional for a dirty first-tool anchor, but these
+		// three fields are mandatory for both clean and dirty checkpoints.
+		// An empty nested JSON object is not a valid older native session.
+		if entry.SessionID == "" || entry.ConvKey == "" || entry.ContextKey == "" {
+			return empty, errors.New("checkpoint store contains an incomplete session entry")
+		}
+	}
+	return state, nil
+}
+
 // readInteractiveSessionState intentionally returns an empty value for a
 // missing store, but a *present and malformed* store is not equivalent to a
 // new user session. Call this strict gate before any persisted conversation
@@ -120,26 +176,8 @@ func readInteractiveSessionState() interactiveSessionState {
 func (b *subscriptionBridge) verifyInteractiveSessionStore() error {
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	path := interactiveSessionStatePath()
-	fi, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("checkpoint store cannot be examined: %w", err)
-	}
-	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 {
-		return errors.New("checkpoint store is not a private regular file")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("checkpoint store cannot be read: %w", err)
-	}
-	var state interactiveSessionState
-	if json.Unmarshal(raw, &state) != nil || state.Version != interactiveSessionStateVersion || state.Sessions == nil {
-		return errors.New("checkpoint store is malformed or has an incompatible version")
-	}
-	return nil
+	_, err := loadInteractiveSessionStateStrict()
+	return err
 }
 
 func writeInteractiveSessionState(state interactiveSessionState) error {
@@ -205,7 +243,10 @@ func (b *subscriptionBridge) saveInteractiveSession(owner, outerSession string, 
 	}
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	state := readInteractiveSessionState()
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		return fmt.Errorf("refusing to overwrite checkpoint store: %w", err)
+	}
 	e.UpdatedAt = time.Now().UTC()
 	state.Sessions[interactiveSessionStateKey(owner, outerSession)] = e
 	if err := writeInteractiveSessionState(state); err != nil {
@@ -228,16 +269,10 @@ func (r *subscriptionRun) persistFirstToolAnchorLocked() error {
 	b := r.bridge
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	path := interactiveSessionStatePath()
-	if raw, err := os.ReadFile(path); err == nil {
-		var checked interactiveSessionState
-		if json.Unmarshal(raw, &checked) != nil || checked.Version != interactiveSessionStateVersion || checked.Sessions == nil {
-			return errors.New("existing checkpoint store is invalid; refusing first-turn anchor")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		return fmt.Errorf("refusing first-turn anchor: %w", err)
 	}
-	state := readInteractiveSessionState()
 	key := interactiveSessionStateKey(r.owner, r.outerSession)
 	if old, ok := state.Sessions[key]; ok {
 		if old.SessionID == r.sessionID && old.Dirty && old.ConvKey == r.firstTurnAnchorKey && old.ReplyKey == "" {
@@ -259,7 +294,11 @@ func (b *subscriptionBridge) markInteractiveSessionDirty(owner, outerSession str
 	}
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
-	state := readInteractiveSessionState()
+	state, err := loadInteractiveSessionStateStrict()
+	if err != nil {
+		log.Printf("Claude interactive checkpoint store: refusing dirty update: %v", err)
+		return
+	}
 	key := interactiveSessionStateKey(owner, outerSession)
 	e, ok := state.Sessions[key]
 	if !ok || e.Dirty {

@@ -85,3 +85,110 @@ func TestInteractiveCheckpointStoreIntegrityAcceptsValidAndAbsentButRejectsSymli
 		t.Fatal("symlink to a foreign checkpoint store accepted")
 	}
 }
+
+// The HTTP preflight is not enough: a damaged store can appear between
+// preflight and a terminal checkpoint write, and internal callers can save
+// without taking the HTTP path. A write must not silently replace the entire
+// checkpoint map with a single new session.
+func TestInteractiveCheckpointSaveNeverOverwritesCorruptOrInsecureStore(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		mode       os.FileMode
+	}{
+		{"truncated JSON", `{"version":`, 0o600},
+		{"future version", `{"version":999,"sessions":{}}`, 0o600},
+		{"null session map", `{"version":1,"sessions":null}`, 0o600},
+		{"incomplete session entry", `{"version":1,"sessions":{"a":{"session_id":"native"}}}`, 0o600},
+		{"publicly readable store", `{"version":1,"sessions":{}}`, 0o644},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			path := interactiveSessionStatePath()
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.body), tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			b := newSubscriptionBridge()
+			defer bridges.Delete(b)
+			err := b.saveInteractiveSession("owner", "outer", interactiveSessionEntry{
+				SessionID: "native", ConvKey: "history", ContextKey: "context",
+			})
+			if err == nil {
+				t.Fatal("corrupted state overwritten instead of rejecting save")
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != tc.body {
+				t.Fatalf("failed save replaced original checkpoint bytes: got=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestInteractiveCheckpointDirtyUpdateDoesNotReplaceDamagedStore(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	b := newSubscriptionBridge()
+	defer bridges.Delete(b)
+	owner, outer := "owner", "outer"
+	if err := b.saveInteractiveSession(owner, outer, interactiveSessionEntry{
+		SessionID: "native", ConvKey: "checkpoint", ContextKey: "context",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := interactiveSessionStatePath()
+	broken := []byte(`{"version":1,"sessions":`)
+	if err := os.WriteFile(path, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.markInteractiveSessionDirty(owner, outer)
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(broken) {
+		t.Fatalf("dirty update destroyed damaged checkpoint: got=%q err=%v", got, err)
+	}
+}
+
+func TestInteractiveCheckpointSaveRejectsSymlinkAndOversizedStore(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path := interactiveSessionStatePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b := newSubscriptionBridge()
+	defer bridges.Delete(b)
+	entry := interactiveSessionEntry{SessionID: "native", ConvKey: "history", ContextKey: "context"}
+	target := filepath.Join(t.TempDir(), "real-state")
+	data := []byte(`{"version":1,"sessions":{}}`)
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.saveInteractiveSession("owner", "outer", entry); err == nil {
+		t.Fatal("symlinked store accepted")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != string(data) {
+		t.Fatalf("symlink target modified: %q %v", got, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxInteractiveSessionStoreBytes + 1); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+	if err := b.saveInteractiveSession("owner", "outer", entry); err == nil {
+		t.Fatal("oversized state file accepted")
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != maxInteractiveSessionStoreBytes+1 {
+		t.Fatalf("oversized checkpoint silently replaced: %+v %v", info, err)
+	}
+}

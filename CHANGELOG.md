@@ -8,6 +8,7 @@
 - Require checkpoint/unique-reply-anchor verification before treating a Desktop-generated continuation as authorization for native `--resume`; fail closed on unrelated history, ambiguous anchors, old tools or uncommitted user requests.
 - Add a deterministic 120-turn checkpoint replay crossing four compacted-history rewrites and seven synthetic 502 transport artifacts. This is not a real model workload.
 - Fail closed if a persisted interactive checkpoint file exists but is invalid, unreadable, symlinked, world-readable or incompatible; never reinterpret a broken store as a new native conversation.
+- Validate on-disk checkpoint state again **under the write lock** before any terminal checkpoint, dirty marker or first-tool anchor is saved. An invalid, incomplete or oversized store can no longer be silently replaced even if corruption happens after request preflight.
 - Emit privacy-bounded structural restore diagnostics only on refusal; distinguish missing or repeated reply anchors, intervening assistant messages and stale tool results without logging message contents, IDs, arguments or hashes. Avoid rehashing the full history on errors to limit extra memory pressure.
 - Make the source/binary verification script use the same reproducible Go build flags as CI. No automatic promotion, no modification to existing native session checkpoints.
 
