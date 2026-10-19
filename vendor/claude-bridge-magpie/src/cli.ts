@@ -57,6 +57,7 @@ import { makePrintErrorResult } from "./print-result.ts";
 import { runJsonSchemaStopHook, runRuntimeHook } from "./stop-hook.ts";
 import { NativeApiErrorTurn, type NativeApiFailure } from "./native-api-error.ts";
 import { prepareSlimCompactionArchive } from "./compact-archive-slim.ts";
+import { stageArchiveSummaries, nativeStageRunner, StagedCompactionError } from "./compact-staged-wrapper.ts";
 import { buildClaudeLaunchCommand, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "./launch-command.ts";
 import { writeNativeTmuxGuard } from "./native-tmux-guard.ts";
 import {
@@ -174,6 +175,7 @@ if (resumedSessionId && !forkedSession) {
 const runId = new Date().toISOString().replace(/[:.]/g, "-") + "-" + randomUUID().slice(0, 8);
 const runDir = join(resolveRunRoot(targetCwd), runId);
 mkdirSync(runDir, { recursive: true });
+let verifiedCompactionArchive: string | null = null;
 if (process.env.MAGPIE_CLAUDE_COMPACT_SLIM_HISTORY === "1"
   && printMode && resumedSessionId && !forkedSession
   && initialMessage?.includes("Summarize the loaded archival conversation according to its final compaction instructions.")) {
@@ -186,12 +188,58 @@ if (process.env.MAGPIE_CLAUDE_COMPACT_SLIM_HISTORY === "1"
   chmodSync(runDir, 0o700);
   try {
     const stats = prepareSlimCompactionArchive(resumedTranscriptPathBeforeLaunch, resumedSessionId, runDir);
+    verifiedCompactionArchive = resumedTranscriptPathBeforeLaunch;
     if (stats.changed) {
       process.stderr.write(`claude-bridge: isolated archival tool outputs excerpted (${stats.originalBytes} -> ${stats.slimBytes} bytes, ${stats.shortenedBlocks} blocks).\n`);
     }
   } catch (error) {
     process.stderr.write(`claude-bridge: archival compaction safety refusal: ${error instanceof Error ? error.message : "invalid archive"}\n`);
     process.exit(2); // no native Claude process or tool has been launched
+  }
+}
+// Experimental wrapper-only staged compaction, deliberately behind a second
+// opt-in switch. Keep the customized NTT Go orphan-recovery Runtime intact.
+// The trusted original archive is retained even if any native stage fails.
+if (process.env.MAGPIE_CLAUDE_COMPACT_STAGE_WRAPPER === "1"
+  && printMode && outputFormat === "stream-json"
+  && resumedSessionId && verifiedCompactionArchive
+  && statSync(verifiedCompactionArchive).size > 768 * 1024) {
+  chmodSync(runDir, 0o700);
+  const stageAbort = new AbortController();
+  const abortStage = () => stageAbort.abort();
+  process.on("SIGTERM", abortStage);
+  process.on("SIGINT", abortStage);
+  const modelIndex = forwardedClaudeArgs.findIndex(arg => arg === "--model");
+  const model = modelIndex >= 0 ? forwardedClaudeArgs[modelIndex + 1] : forwardedClaudeArgs.find(s => s.startsWith("--model="))?.slice(8);
+  try {
+    if (!model) throw new StagedCompactionError("no model specified for staged compaction", 400);
+    const summary = await stageArchiveSummaries(
+      readFileSync(verifiedCompactionArchive, "utf8"), resumedSessionId,
+      input => nativeStageRunner(fileURLToPath(import.meta.url), model, input), stageAbort.signal,
+    );
+    const sid = resumedSessionId;
+    process.stdout.write(JSON.stringify(makeClaudeInitEvent({ sessionId: sid, cwd: targetCwd, model })) + "\n");
+    process.stdout.write(JSON.stringify({
+      type: "assistant", session_id: sid,
+      message: { id: "msg_" + randomUUID().replaceAll("-", ""), type: "message", model,
+        content: [{ type: "text", text: summary }], stop_reason: "end_turn" },
+    }) + "\n");
+    process.stdout.write(JSON.stringify(makeClaudeResultEvent({
+      resultText: summary, sessionId: sid, model, stopReason: "end_turn",
+    })) + "\n");
+    process.exit(0);
+  } catch (error) {
+    const status = error instanceof StagedCompactionError ? error.status : 502;
+    const detail = error instanceof Error ? error.message : "unknown stage failure";
+    const message = `Staged compaction failed: ${detail}; original Desktop conversation unchanged`;
+    process.stdout.write(JSON.stringify(makeClaudeErrorResultEvent({
+      message, legacyResult: message, apiErrorStatus: status,
+      sessionId: resumedSessionId, model,
+    })) + "\n");
+    process.exit(1);
+  } finally {
+    process.off("SIGTERM", abortStage);
+    process.off("SIGINT", abortStage);
   }
 }
 // Opt-in local-only API diagnostics for stuck post-tool model requests.
