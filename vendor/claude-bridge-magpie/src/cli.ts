@@ -55,6 +55,7 @@ import {
 } from "./hook-install.ts";
 import { makePrintErrorResult } from "./print-result.ts";
 import { runJsonSchemaStopHook, runRuntimeHook } from "./stop-hook.ts";
+import { NativeApiErrorTurn, type NativeApiFailure } from "./native-api-error.ts";
 import { buildClaudeLaunchCommand, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "./launch-command.ts";
 import { writeNativeTmuxGuard } from "./native-tmux-guard.ts";
 import {
@@ -238,6 +239,8 @@ let lastAssistantRow: TranscriptRow | null = null;
 let lastTurnDurationMs: number | undefined;
 let pendingPrintResultText = "";
 let pendingPrintFailure: { message: string; rawResponse?: string } | null = null;
+const nativeApiErrorTurn = new NativeApiErrorTurn();
+let pendingNativeApiFailure: NativeApiFailure | null = null;
 let printDone = false;
 let messageDisplayOffset = 0;
 // stream-json compat: synthesize the claude -p event stream from the
@@ -741,6 +744,10 @@ async function waitForPrintTurnEnd(): Promise<void> {
   while (!ctrl.signal.aborted && Date.now() - startedAt < MAX_SESSION_MS) {
     emitMessageDisplayEvents();
 
+    // Native API errors can terminate a turn without invoking the Stop hook.
+    // Do not wait for the caller to time out and retry an already failed turn.
+    if (failCompletedNativeApiTurn()) return;
+
     const stopEvent = readRuntimeStopEvent();
     if (stopEvent) {
       emitMessageDisplayEvents();
@@ -761,6 +768,7 @@ async function waitForPrintTurnEnd(): Promise<void> {
         emitMessageDisplayEvents();
       }
       await hydrateTranscriptFromStopEvent(stopEvent);
+      if (failCompletedNativeApiTurn()) return;
       if (stopEvent.hook_event_name === "StopFailure") {
         failPrint(runtimeStopFailureMessage(stopEvent), { rawResponse: JSON.stringify(stopEvent) });
         return;
@@ -801,6 +809,14 @@ async function waitForPrintTurnEnd(): Promise<void> {
     const elapsed = Math.round((Date.now() - startedAt) / 1000);
     failPrint(`Session safety ceiling reached after ${elapsed}s waiting for the Stop hook event.`);
   }
+}
+
+function failCompletedNativeApiTurn(): boolean {
+  const failure = pendingNativeApiFailure;
+  if (!failure) return false;
+  if (failure.status) lastApiErrorStatus = failure.status;
+  failPrint(`Claude Code API error: ${failure.message}`);
+  return true;
 }
 
 function readRuntimeStopEvent(): RuntimeStopEvent | null {
@@ -1269,6 +1285,9 @@ function handleTranscriptRow(row: TranscriptRow, _rawLine: string): void {
   stdoutLine({ type: "transcript", row });
 
   if (!printMode) return;
+
+  const nativeFailure = nativeApiErrorTurn.observe(row as Record<string, unknown>);
+  if (nativeFailure) pendingNativeApiFailure = nativeFailure;
 
   if (typeof row.version === "string" && row.version) claudeVersionFromTranscript = row.version;
   if (row.type === "system" && row.subtype === "api_error") {
