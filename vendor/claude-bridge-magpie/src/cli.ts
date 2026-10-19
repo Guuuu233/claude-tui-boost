@@ -56,6 +56,7 @@ import {
 import { makePrintErrorResult } from "./print-result.ts";
 import { runJsonSchemaStopHook, runRuntimeHook } from "./stop-hook.ts";
 import { NativeApiErrorTurn, type NativeApiFailure } from "./native-api-error.ts";
+import { prepareSlimCompactionArchive } from "./compact-archive-slim.ts";
 import { buildClaudeLaunchCommand, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "./launch-command.ts";
 import { writeNativeTmuxGuard } from "./native-tmux-guard.ts";
 import {
@@ -173,6 +174,26 @@ if (resumedSessionId && !forkedSession) {
 const runId = new Date().toISOString().replace(/[:.]/g, "-") + "-" + randomUUID().slice(0, 8);
 const runDir = join(resolveRunRoot(targetCwd), runId);
 mkdirSync(runDir, { recursive: true });
+if (process.env.MAGPIE_CLAUDE_COMPACT_SLIM_HISTORY === "1"
+  && printMode && resumedSessionId && !forkedSession
+  && initialMessage?.includes("Summarize the loaded archival conversation according to its final compaction instructions.")) {
+  // Go has already created a separate read-only archival transcript. Never
+  // modify arbitrary `--resume` sessions, even when this flag is present.
+  if (!resumedTranscriptPathBeforeLaunch) {
+    process.stderr.write("claude-bridge: isolated compaction transcript not found; refusing to start.\n");
+    process.exit(2);
+  }
+  chmodSync(runDir, 0o700);
+  try {
+    const stats = prepareSlimCompactionArchive(resumedTranscriptPathBeforeLaunch, resumedSessionId, runDir);
+    if (stats.changed) {
+      process.stderr.write(`claude-bridge: isolated archival tool outputs excerpted (${stats.originalBytes} -> ${stats.slimBytes} bytes, ${stats.shortenedBlocks} blocks).\n`);
+    }
+  } catch (error) {
+    process.stderr.write(`claude-bridge: archival compaction safety refusal: ${error instanceof Error ? error.message : "invalid archive"}\n`);
+    process.exit(2); // no native Claude process or tool has been launched
+  }
+}
 // Opt-in local-only API diagnostics for stuck post-tool model requests.
 // Claude debug files can include private request metadata; protect the
 // directory rather than printing diagnostics to Magpie or Desktop logs.
