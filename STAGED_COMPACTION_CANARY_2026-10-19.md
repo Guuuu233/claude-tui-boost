@@ -1,6 +1,6 @@
 # Claude Desktop `/compact`: staged Bun Wrapper summarization
 
-**Status:** a separate opt-in experimental feature, default OFF. Built to preserve the NTT custom `orphanfix` Go Runtime while resolving a real ~451K Desktop history that still produced native HTTP 400 after tool-output slimming. Not yet proven on the full original conversation.
+**Status:** a separate opt-in experimental feature, default OFF for releases; **enabled on NTT at the operator's request on 2026-10-19**. Built to preserve the NTT custom `orphanfix` Go Runtime while resolving a real ~451K Desktop history that still produced native HTTP 400 after tool-output slimming. **Not yet proven on the full original conversation.**
 
 ## Root cause and failed first mitigation
 
@@ -34,8 +34,18 @@ Safety bounds: 512 KiB stage size measured as UTF-8 JSONL bytes (not model token
 3. **Real native Claude Opus 5.5 canary on NTT**, fully isolated from production: newly synthesized 820,962-byte archival transcript with an early `PROJECT_COLOR=COBALT` fact, a paired historical Bash tool call/result, and late `NEVER_CHANGE_PRODUCTION` decision. The existing slim feature reduced it to 814,524 bytes. The staged Bun Wrapper used **two sequential native stages**, finished in ~28 seconds, and returned a complete `<summary>` with both markers. Response `subtype=success`, no new tool calls in parent output, and no remaining native Claude processes. The canary only verifies **two synthetic stages**, not the actual ~451K context or 12-stage summary quality.
 4. Production `orphanfix` Go binary was neither replaced nor restarted for the isolated test. NTT Magpie and Claude TUI remained active.
 
-## Rollout constraints and rollback
+## NTT deployment and rollback
 
-If authorized for NTT production, stage only the two new Bun source files (`cli.ts` and `compact-staged-wrapper.ts`), preserving existing PR #9 slimming and customized `orphanfix` Runtime. Use a **separate systemd override** to turn on `MAGPIE_CLAUDE_COMPACT_STAGE_WRAPPER=1`; verify the exact process environment, existing binary path, service health and current process id. Take a dedicated pre-deployment backup of the old `cli.ts` and systemd override, and create a rollback script that only restores those changes, leaving PR #9 intact. Only restart at an idle boundary; a dependent Magpie restart may briefly occur.
+After the isolated real-Opus canary, the NTT Runtime was checked at an idle boundary (no Claude or Bun work), and only the **two Bun source files** (`cli.ts` and `compact-staged-wrapper.ts`) were atomically installed in the existing plugin tree. The **custom `0.2.8-rc.3-orphanfix` Go Runtime executable was not replaced**. A new, separate systemd override was installed at `/etc/systemd/system/magpie-tui-runtime.service.d/zzzzzzzzzz-compact-stage-wrapper.conf`, setting `MAGPIE_CLAUDE_COMPACT_STAGE_WRAPPER=1`. The previous PR #9 slim flag remains enabled in its own override.
 
-**Outstanding production gate:** the original ~451K Desktop conversation has not yet passed `/compact`. Do not automatically replay that request. The user should supervise one deliberate attempt, inspect preservation of early decisions, current project paths and unfinished work, and avoid repeated retries on failure. Full 12-stage summaries may take several minutes and consume subscription allowance.
+The Runtime was restarted with systemd. The dependent Magpie gateway needed a short startup interval and subsequently returned HTTP 200 on `/v1/models`. The restarted Runtime process environment contained **both** opt-in flags and the executable still resolved to the original `orphanfix` binary. Independent source hashes matched: `cli.ts` = `71c61f73369d67ccea811854b2565b337df45b743722152f6ebbc0e29aeb2d07` and `compact-staged-wrapper.ts` = `5156977cf7de8b61e5418f73930b8ed001b436d42d0e52ad73ad37100d1d569a`.
+
+The independent pre-deployment backup and rollback script are under `/root/ntt-compact-stage-before-20261019/`. **This rollback only removes the staged feature and restores its previous Wrapper**; the earlier PR #9 slim feature and `orphanfix` executable are left unchanged. At an idle boundary, an authorized operator can run:
+
+```bash
+/root/ntt-compact-stage-before-20261019/ROLLBACK.sh
+```
+
+Check service status and `/v1/models` again after rollback; do not execute the rollback during any active Claude/Bun work.
+
+**Outstanding production gate:** the original ~451K Desktop conversation has not yet passed `/compact`. It was **not** automatically replayed during deployment. The user should supervise one deliberate attempt, inspect preservation of early decisions, current project paths and unfinished work, and avoid repeated retries on failure. Full 12-stage summaries may take several minutes and consume subscription allowance. The isolated two-stage canary fixture and temporary wrapper directory were cleaned up, and both production services remained active.
