@@ -49,3 +49,36 @@ The independent pre-deployment backup and rollback script are under `/root/ntt-c
 Check service status and `/v1/models` again after rollback; do not execute the rollback during any active Claude/Bun work.
 
 **Outstanding production gate:** the original ~451K Desktop conversation has not yet passed `/compact`. It was **not** automatically replayed during deployment. The user should supervise one deliberate attempt, inspect preservation of early decisions, current project paths and unfinished work, and avoid repeated retries on failure. Full 12-stage summaries may take several minutes and consume subscription allowance. The isolated two-stage canary fixture and temporary wrapper directory were cleaned up, and both production services remained active.
+
+## 2026-10-19: client disconnects before staged run finishes
+
+During the first supervised ~451K conversation attempt after stage rollout,
+the Magpie router recorded **HTTP 499 after 776,237 ms (~12m56s)**. Native
+Runtime journal at **13:29:31 UTC** independently reported **"the client went
+away 12m36.241s into the reply"**. The parent Bun stage orchestrator then
+exited and a *new* parent was launched by a new Desktop request. The repeated
+native Opus children showed that the first staged attempt was making progress;
+it was not the earlier 400 input-limit failure. The native stage implementation
+never emitted a Desktop summary until all stages completed, and previously did
+not persist validated intermediate progress, so every retry incurred all prior
+stages again. The user's original Desktop history was not modified.
+
+The subsequent **checkpoint-resume patch** retains the completed rolling
+`<summary>` after **each successful stage** in a private profile-specific
+directory (`<CLAUDE_CONFIG_DIR>/magpie-compact-stage-checkpoints`). The file
+name is a SHA-256 digest of the semantic historical content, stage count,
+512-KiB chunking policy and model; generated UUIDs, timestamps and temporary
+cwd values are intentionally excluded so a re-seeded request can find its own
+progress. Only complete, validated summaries are written, with temporary
+mode-0600 files, `fsync`, and atomic rename. An exclusive process lock prevents
+duplicate concurrent executions of the *same* history; the lock is removed
+after all native children have exited. Progress expires after **24 hours**.
+The checkpoint stores private summarized conversation content and must remain
+in the private Claude profile; never publish it or its key in GitHub logs.
+
+The patch is designed for **new** Wrapper invocations. It cannot retroactively
+save stages that have already completed in a previously launched, older Bun
+orchestrator. A manual Stop in Desktop prevents automatic costly retries;
+restart / re-request only after verifying the new source was loaded. These
+checkpoints do not extend the Desktop's client-side request timeout; they
+instead ensure a subsequent identical request resumes the completed work.
