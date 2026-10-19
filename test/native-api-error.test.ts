@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { NativeApiErrorTurn } from "../vendor/claude-bridge-magpie/src/native-api-error.ts";
+import { makeClaudeErrorResultEvent } from "../vendor/claude-bridge-magpie/src/claude-compat.ts";
 
 const terminal = { type: "system", subtype: "turn_duration" };
 const tooLong = {
@@ -35,4 +36,12 @@ test("an untrusted or missing native error message never becomes a success or an
   const turn = new NativeApiErrorTurn();
   expect(turn.observe({ ...tooLong, message: { model: "<synthetic>", content: [] } })).toBeNull();
   expect(turn.observe(terminal)).toBeNull();
+});
+
+test("completed native API failures remain readable by an older Go runtime", () => {
+  const event = makeClaudeErrorResultEvent({ message: "Prompt is too long", apiErrorStatus: 400, legacyResult: "Claude Code API error: Prompt is too long" });
+  expect(event.is_error).toBe(true);
+  expect(event.result).toBe("Claude Code API error: Prompt is too long");
+  expect(event.error).toBe("Prompt is too long");
+  expect(makeClaudeErrorResultEvent({ message: "ordinary failure" }).result).toBeNull();
 });

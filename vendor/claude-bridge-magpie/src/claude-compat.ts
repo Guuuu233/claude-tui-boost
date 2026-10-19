@@ -213,6 +213,9 @@ export function makeClaudeResultEvent(opts: {
  */
 export function makeClaudeErrorResultEvent(opts: {
   message: string;
+  // Older Go runtimes read `result` but not `error` on a failed PTY turn.
+  // Only completed native API failures set this compatibility field.
+  legacyResult?: string;
   subtype?: string;
   apiErrorStatus?: number | null;
   sessionId?: string;
@@ -233,7 +236,7 @@ export function makeClaudeErrorResultEvent(opts: {
     ttft_stream_ms: null,
     time_to_request_ms: null,
     num_turns: 1,
-    result: null,
+    result: opts.legacyResult ?? null,
     error: opts.message,
     stop_reason: null,
     session_id: opts.sessionId ?? null,
