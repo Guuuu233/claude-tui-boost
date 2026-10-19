@@ -58,6 +58,23 @@ import (
 	"time"
 )
 
+// Claude Code's native TUI wrapper reports a terminal API error as an
+// error_during_execution result with `error` populated and `result: null`.
+// Do not lose a verified HTTP error merely because there was no model text.
+func nativeErrorResultText(result string, status int, raw json.RawMessage) string {
+	if result != "" {
+		return result
+	}
+	if status < 400 {
+		return ""
+	}
+	var detail string
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(detail)
+}
+
 type subscriptionBridge struct {
 	mu          sync.Mutex
 	stateMu     sync.Mutex                  // serializes the optional interactive checkpoint file
@@ -2355,7 +2372,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 			switch {
 			case envelope.IsError:
 				cut = false
-				text := envelope.Result
+				text := nativeErrorResultText(envelope.Result, envelope.APIErrorStatus, envelope.ErrorKind)
 				if text == "" && waiting {
 					text = "Claude Code gave no answer fitting the schema (" + envelope.Subtype + ")"
 					if len(envelope.Errors) > 0 {

@@ -1638,6 +1638,8 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 			RateLimitInfo    json.RawMessage `json:"rate_limit_info"`
 			IsError          bool            `json:"is_error"`
 			Result           string          `json:"result"`
+			ErrorField       json.RawMessage `json:"error"`
+			APIErrorStatus   int             `json:"api_error_status"`
 			Subtype          string          `json:"subtype"`
 			Errors           []string        `json:"errors"`
 			StructuredOutput json.RawMessage `json:"structured_output"`
@@ -1848,7 +1850,7 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 			if r.schema {
 				switch {
 				case msg.IsError:
-					why := msg.Result
+					why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorField)
 					if why == "" {
 						why = "Claude Code gave no answer fitting the schema"
 						if msg.Subtype != "" {
@@ -1858,7 +1860,7 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 							why += ": " + strings.Join(msg.Errors, "; ")
 						}
 					}
-					r.emit(Event{Kind: KError, Text: why})
+					r.emit(Event{Kind: KError, Text: why, Status: msg.APIErrorStatus})
 				case !started || len(msg.StructuredOutput) == 0 || string(msg.StructuredOutput) == "null":
 					r.emit(Event{Kind: KError, Text: "Claude Code ended the turn with no answer fitting the schema"})
 				default:
@@ -1866,11 +1868,11 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 					r.emit(Event{Kind: KStop, Stop: "stop"})
 				}
 			} else if msg.IsError || !started || !sawText || stopFromAnthropic(msg.StopReason) != "stop" {
-				why := msg.Result
+				why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorField)
 				if why == "" {
 					why = "Claude interactive wrapper ended without a complete text answer"
 				}
-				r.emit(Event{Kind: KError, Text: why})
+				r.emit(Event{Kind: KError, Text: why, Status: msg.APIErrorStatus})
 			} else {
 				r.emit(Event{Kind: KStop, Stop: "stop"})
 			}
