@@ -635,6 +635,10 @@ function failPrint(message: string, details: { rawResponse?: string } = {}): voi
       JSON.stringify(
         makeClaudeErrorResultEvent({
           message: messageWithPaneTail,
+          // Preserve the actual native terminal error for an older runtime
+          // whose response decoder does not yet read the `error` field.
+          // For all other failures, keep the standard result:null shape.
+          ...(pendingNativeApiFailure ? { legacyResult: `Claude Code API error: ${pendingNativeApiFailure.message}` } : {}),
           apiErrorStatus: lastApiErrorStatus,
           sessionId: transcriptSessionId,
           durationMs: lastTurnDurationMs,
