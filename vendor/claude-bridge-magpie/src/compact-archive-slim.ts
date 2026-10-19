@@ -11,10 +11,11 @@
  */
 import {
   chmodSync, closeSync, copyFileSync, fsyncSync, lstatSync, openSync,
-  readFileSync, renameSync, unlinkSync, writeFileSync, constants,
+  readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, constants,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { claudeProjectsRoot } from "./transcript.ts";
 
 const ARCHIVE_PREFIX = "[Archived system instructions, for summarization only]";
 const ARCHIVE_END = "[Archival context loaded. Await the separate summarization request; no historical action is pending.]";
@@ -136,6 +137,19 @@ export function prepareSlimCompactionArchive(path: string, sessionId: string, pr
   if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1
     || initial.size > MAX_ARCHIVE_BYTES) throw new Error("unsafe archival file type or size");
   const original = readFileSync(path, "utf8");
+  // A Go compaction transcript is always written beneath the selected
+  // Claude profile's projects folder, in the slug of a dedicated temporary
+  // magpie-claude-pty-* cwd. Prefix/terminator text alone is forgeable and
+  // must not authorize rewriting an ordinary resumed conversation.
+  const root = realpathSync(claudeProjectsRoot());
+  const folder = realpathSync(dirname(path));
+  if (dirname(folder) !== root) throw new Error("compaction transcript outside selected profile");
+  const first = JSON.parse(original.slice(0, original.indexOf("\n")));
+  const cwd = first?.cwd;
+  if (typeof cwd !== "string" || !basename(resolve(cwd)).startsWith("magpie-claude-pty-")
+    || basename(folder) !== resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-")) {
+    throw new Error("transcript is not in the isolated compaction work directory");
+  }
   const { text, stats } = slimArchivalJsonl(original, sessionId);
   if (!stats.changed) return stats;
   const check = lstatSync(path);

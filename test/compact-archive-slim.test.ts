@@ -11,7 +11,7 @@ const end = "[Archival context loaded. Await the separate summarization request;
 function row(role: "user" | "assistant", content: unknown[]) {
   return { type: role, sessionId: id, isSidechain: false, message: { role, content } };
 }
-function archive(text = "A".repeat(22000)) {
+function archive(text = "A".repeat(22000), cwd = "/tmp/magpie-claude-pty-synthetic") {
   return [
     row("user", [{ type: "text", text: start }]),
     row("user", [{ type: "text", text: "Keep cobalt as the selected color, and never touch production." }]),
@@ -20,7 +20,7 @@ function archive(text = "A".repeat(22000)) {
       content: [{ type: "text", text }, { type: "image", source: { type: "base64", media_type: "image/png", data: "SYNTHETIC" } }] }]),
     row("assistant", [{ type: "text", text: "Final decision: no production changes." }]),
     row("assistant", [{ type: "text", text: end }]),
-  ].map(x => JSON.stringify(x)).join("\n") + "\n";
+  ].map(x => JSON.stringify({ ...x, cwd })).join("\n") + "\n";
 }
 
 test("only long archival tool result text is reduced; all decisions and paired tools survive", () => {
@@ -57,14 +57,24 @@ test("preserves private original and atomically rewrites only a dedicated archiv
   const dir = mkdtempSync(join(tmpdir(), "compact-archive-slim-"));
   const run = join(dir, "run");
   mkdirSync(run, { mode: 0o700 });
-  const path = join(dir, `${id}.jsonl`);
-  const original = archive();
+  const previousConfig = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = dir;
+  const cwd = join(dir, "magpie-claude-pty-fixture");
+  const project = join(dir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(project, { recursive: true });
+  const path = join(project, `${id}.jsonl`);
+  const original = archive(undefined, cwd);
   writeFileSync(path, original, { mode: 0o600 });
-  const result = prepareSlimCompactionArchive(path, id, run);
-  expect(result.changed).toBe(true);
-  expect(readFileSync(join(run, "original-compaction-archive.jsonl"), "utf8")).toBe(original);
-  expect(readFileSync(path, "utf8")).not.toBe(original);
-  expect(lstatSync(path).mode & 0o777).toBe(0o600);
+  try {
+    const result = prepareSlimCompactionArchive(path, id, run);
+    expect(result.changed).toBe(true);
+    expect(readFileSync(join(run, "original-compaction-archive.jsonl"), "utf8")).toBe(original);
+    expect(readFileSync(path, "utf8")).not.toBe(original);
+    expect(lstatSync(path).mode & 0o777).toBe(0o600);
+  } finally {
+    if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfig;
+  }
 });
 
 test("refuses symlinked archive without touching its target", () => {
