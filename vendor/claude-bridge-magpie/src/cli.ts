@@ -27,6 +27,7 @@ import {
   projectFolderFromTranscript,
   readTranscript,
   transcriptRowsAfterBaseline,
+  claudeProjectsRoot,
   transcriptRowsFromLastUserPrompt,
   sessionIdFromPath,
   tailTranscript,
@@ -216,6 +217,8 @@ if (process.env.MAGPIE_CLAUDE_COMPACT_STAGE_WRAPPER === "1"
     const summary = await stageArchiveSummaries(
       readFileSync(verifiedCompactionArchive, "utf8"), resumedSessionId,
       input => nativeStageRunner(fileURLToPath(import.meta.url), model, input), stageAbort.signal,
+      undefined,
+      { directory: join(dirname(claudeProjectsRoot()), "magpie-compact-stage-checkpoints"), model },
     );
     const sid = resumedSessionId;
     process.stdout.write(JSON.stringify(makeClaudeInitEvent({ sessionId: sid, cwd: targetCwd, model })) + "\n");

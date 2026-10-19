@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stageArchiveSummaries, planStagedCompaction, StagedCompactionError } from "../vendor/claude-bridge-magpie/src/compact-staged-wrapper.ts";
 
 const sid = "12345678-1111-4111-8111-111111111111";
@@ -69,4 +72,57 @@ test("cancellation prevents later stages", async () => {
     return "<summary>one stage</summary>";
   }, ac.signal, 5100)).rejects.toBeInstanceOf(StagedCompactionError);
   expect(count).toBe(1);
+});
+
+test("a canceled request leaves only verified progress, and a new native session resumes the correct stage", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "stage-durable-resume-"));
+  const stages = planStagedCompaction(archive(), sid, 5100).length;
+  let firstAttempts = 0;
+  const opt = { directory, model: "claude-opus-5-5" };
+  await expect(stageArchiveSummaries(archive(), sid, async input => {
+    firstAttempts++;
+    if (input.index === 1) throw new Error("simulated client cancellation");
+    return "<summary>PROJECT=COBALT and production immutable</summary>";
+  }, undefined, 5100, opt)).rejects.toThrow(/simulated client cancellation/);
+  expect(firstAttempts).toBe(2);
+  const files = readdirSync(directory).filter(f => f.endsWith(".json"));
+  expect(files).toHaveLength(1);
+  expect(statSync(join(directory, files[0]!)).mode & 0o777).toBe(0o600);
+  const saved = JSON.parse(readFileSync(join(directory, files[0]!), "utf8"));
+  expect(saved.completed).toBe(1);
+  expect(saved.summary).toContain("COBALT");
+
+  // Go recreates new session IDs and tmp dirs for every retry; none should
+  // affect a content-bound checkpoint key.
+  const retrySession = "12345678-2222-4222-8222-222222222222";
+  const retriedHistory = archive().replaceAll(sid, retrySession)
+    .replaceAll("magpie-claude-pty-synthetic", "magpie-claude-pty-retry");
+  const indices: number[] = [];
+  const final = await stageArchiveSummaries(retriedHistory, retrySession, async input => {
+    indices.push(input.index);
+    return `<summary>PROJECT=COBALT continued to ${input.index+1}/${input.total}</summary>`;
+  }, undefined, 5100, opt);
+  expect(indices).toHaveLength(stages - 1);
+  expect(indices[0]).toBe(1);
+  expect(final).toContain(`${stages}/${stages}`);
+  const noMoreRuns: number[] = [];
+  expect(await stageArchiveSummaries(retriedHistory, retrySession, async x => {
+    noMoreRuns.push(x.index);
+    throw new Error("must use validated completed checkpoint");
+  }, undefined, 5100, opt)).toBe(final);
+  expect(noMoreRuns).toHaveLength(0);
+});
+
+test("checkpoints do not cross model identities", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "stage-model-key-"));
+  let a = 0, b = 0;
+  await stageArchiveSummaries(archive(), sid, async () => {
+    a++; return "<summary>opus</summary>";
+  }, undefined, 5100, { directory, model: "opus" });
+  await stageArchiveSummaries(archive(), sid, async () => {
+    b++; return "<summary>sonnet</summary>";
+  }, undefined, 5100, { directory, model: "sonnet" });
+  expect(a).toBeGreaterThan(2);
+  expect(b).toBe(a);
+  expect(readdirSync(directory).filter(f => f.endsWith(".json"))).toHaveLength(2);
 });
