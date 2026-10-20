@@ -92,6 +92,13 @@ export function reshapeAssistantEvent(row: TranscriptRow, sessionId?: string): C
     ...(session ? { session_id: session } : {}),
     ...(uuid ? { uuid } : {}),
     ...(requestId ? { request_id: requestId } : {}),
+    // Synthetic API failures are transport failures, not model answers.
+    // Preserve native metadata so consumers need not infer it from text.
+    ...(row.isApiErrorMessage === true ? {
+      isApiErrorMessage: true,
+      ...(row.error !== undefined ? { error: row.error } : {}),
+      ...(typeof row.api_error_status === "number" ? { api_error_status: row.api_error_status } : {}),
+    } : {}),
   };
 }
 

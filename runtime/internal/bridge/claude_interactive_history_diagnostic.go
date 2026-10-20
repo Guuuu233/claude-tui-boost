@@ -64,9 +64,67 @@ func interactiveRecoveryDiagnostic(req *Request) string {
 				results++
 			}
 		}
-		rows = append(rows, fmt.Sprintf("row=%d role=%s text=%d calls=%d results=%d reminders=%d recovery_user=%t synthetic_error=%t", i, role, text, calls, results, reminders, interactiveRecoveryUserMessage(m), interactiveRecoverySyntheticAssistant(m)))
+		rows = append(rows, fmt.Sprintf("row=%d role=%s text=%d calls=%d results=%d reminders=%d recovery_user=%t synthetic_error=%t transport_502=%t", i, role, text, calls, results, reminders, interactiveRecoveryUserMessage(m), interactiveRecoverySyntheticAssistant(m), claudeDesktopFailedTurnCompanionReply(m)))
 	}
 	return strings.Join(rows, "; ")
+}
+
+// Diagnostic only: a transport_502 match describes a known text format,
+// never authenticated provenance or permission to discard/replay a turn.
+// Reuse the admission classifiers; do not broaden their acceptance rules.
+func interactiveRecoveryAdmissionDiagnostic(req *Request) string {
+	clean, _, err := interactiveRequestWithoutSystem(req)
+	if err != nil {
+		return "optin_block=invalid_system_shape"
+	}
+	end := len(clean.Messages) - 1
+	for end >= 0 && interactiveIgnorableRecoveryTail(clean.Messages[end]) {
+		end--
+	}
+	optin := interactiveReadOnlyOptInIndex(req) >= 0
+	legacy := interactiveAbandonedToolRecoveryIndex(req) >= 0
+	block, count, last, sentinel := "last_not_user", 0, -1, -1
+	if end >= 0 && clean.Messages[end].Role == "user" {
+		m := clean.Messages[end]
+		shapeRejected := claudeDesktopTurnCompanionMessage(m)
+		for i, p := range m.Parts {
+			if p.Kind == Thinking || p.Kind == ToolResult || p.Kind == Image {
+				continue
+			}
+			if p.Kind != Text {
+				shapeRejected = true
+				continue
+			}
+			s := strings.TrimSpace(p.Text)
+			if s == "" || strings.HasPrefix(s, "[Request interrupted by user]") {
+				continue
+			}
+			if strings.Contains(s, "<system-reminder>") || strings.HasPrefix(s, "[SUGGESTION MODE:") {
+				shapeRejected = true
+			}
+			last = i
+			if interactiveOptInRecoveryTexts[s] {
+				count++
+				sentinel = i
+			}
+		}
+		switch {
+		case optin:
+			block = "none"
+		case count == 0:
+			block = "missing_sentinel"
+		case shapeRejected:
+			block = "shape_rejected"
+		case count > 1:
+			block = "multiple_sentinels"
+		case sentinel != last:
+			block = "sentinel_not_last"
+		default:
+			block = "classifier_rejected"
+		}
+	}
+	return fmt.Sprintf("optin=%t legacy=%t tool_handoff=%t sentinel_parts=%d sentinel_last=%t optin_block=%s",
+		optin, legacy, interactiveToolContinuation(req), count, count > 0 && sentinel == last, block)
 }
 
 // Explain a failed persisted resume through bounded structural metadata
@@ -122,8 +180,8 @@ func interactiveRestoreRejectionDiagnostic(saved interactiveSessionEntry, req *R
 			}
 		}
 	}
-	summary := fmt.Sprintf("checkpoint_saved=%t anchor=%s suffix=%s dirty=%t rows=%d; %s",
-		saved.ConvKey != "", anchor, suffix, saved.Dirty, len(req.Messages), interactiveRecoveryDiagnostic(req))
+	summary := fmt.Sprintf("checkpoint_saved=%t anchor=%s suffix=%s dirty=%t rows=%d; %s; %s",
+		saved.ConvKey != "", anchor, suffix, saved.Dirty, len(req.Messages), interactiveRecoveryAdmissionDiagnostic(req), interactiveRecoveryDiagnostic(req))
 	if len(summary) > 1024 {
 		return summary[:1024]
 	}

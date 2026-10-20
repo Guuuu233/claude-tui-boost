@@ -36,3 +36,9 @@ test("an untrusted or missing native error message never becomes a success or an
   expect(turn.observe({ ...tooLong, message: { model: "<synthetic>", content: [] } })).toBeNull();
   expect(turn.observe(terminal)).toBeNull();
 });
+
+import {reshapeAssistantEvent} from "../vendor/claude-bridge-magpie/src/claude-compat.ts";
+test('native API failure retains authoritative error metadata through reshaping',()=>{
+ const event=reshapeAssistantEvent({type:'assistant',isApiErrorMessage:true,error:'invalid_request',requestId:'fixture-request',message:{model:'<synthetic>',content:[{type:'text',text:'API Error: fixture refusal'}]}},'fixture-session');
+ expect(event.isApiErrorMessage).toBe(true);expect(event.error).toBe('invalid_request');expect(event.request_id).toBe('fixture-request');
+});

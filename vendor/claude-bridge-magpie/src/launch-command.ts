@@ -9,7 +9,13 @@ export type ClaudeLaunchCommandOptions = {
 
 export function interactiveMcpBackgroundEnvArgs(): string[] {
   // tmux servers can predate this wrapper and retain their original environment.
-  return ["CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0"];
+  return [
+    "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0",
+    // This private MCP server is the only source of client tools. Join its
+    // alwaysLoad listing before the first prompt instead of racing startup.
+    "CLAUDE_CODE_MCP_ALWAYS_LOAD_JOIN_BEFORE_INPUT=1",
+    "CLAUDE_CODE_MCP_STARTUP_WAIT_MS=30000",
+  ];
 }
 
 /**
