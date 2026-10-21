@@ -1342,6 +1342,18 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 		clean()
 		return nil, nil, err
 	}
+	if outerSession == "" {
+		// The folder is this run's alone, and nothing resumes a stateless
+		// session: what the last run's Claude Code wrote as it exited goes.
+		for _, dir := range claudeSessions(configDir, work) {
+			entries, _ := os.ReadDir(dir)
+			for _, e := range entries {
+				if sid, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok && !e.IsDir() {
+					removeSession([]string{dir}, sid)
+				}
+			}
+		}
+	}
 	toolsPath := filepath.Join(tmp, "tools.json")
 	toolBytes, _ := json.Marshal(interactiveTools(req, len(images) > 0))
 	if err := os.WriteFile(toolsPath, toolBytes, 0o600); err != nil {
