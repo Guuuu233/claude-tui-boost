@@ -6,12 +6,12 @@ import (
 )
 
 func TestInteractiveNativeToolWaitDoesNotExpireAfterFiveMinutes(t *testing.T) {
-	// In the native TUI path stdin is deliberately nil. Before the fix,
-	// park() treated that as a disposable one-shot run and reset the PTY
-	// abort timer to parkLongest (five minutes) despite live MCP tools.
+	// A native run waiting on its client's tools is let go after a short
+	// wait, not held for an hour: a result that comes later resumes its
+	// session (liteParkedBranch) instead of being refused.
 	native := &subscriptionRun{interactive: true, asked: []string{"Bash", "Write"}}
-	if wait := native.parkedToolWaitTimeout(); wait < 60*time.Minute {
-		t.Fatalf("native PTY callback would expire during long external tool execution: %s", wait)
+	if wait := native.parkedToolWaitTimeout(); wait <= 0 || wait > 10*time.Minute {
+		t.Fatalf("native PTY run held %s waiting on its tools", wait)
 	}
 	if interactiveActiveLongest < 6*time.Hour {
 		t.Fatalf("native active-run watchdog too short: %s", interactiveActiveLongest)

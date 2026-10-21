@@ -91,8 +91,11 @@ type Request struct {
 	compactHistory []Message
 	compactSystem  string
 	// seedHistory is the conversation a native run resumes from, written as
-	// a Claude Code session before it starts (claude_science.go).
+	// a Claude Code session before it starts (claude_lite.go).
 	seedHistory []Message
+	// resumedCopy says the session a run resumes is a copy made for this
+	// turn (liteParkedBranch): like a seeded one, no earlier state of it.
+	resumedCopy bool
 	Model       string
 	System      string
 	Messages    []Message

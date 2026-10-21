@@ -35,8 +35,11 @@ func TestInteractiveMCPDeadlineLeavesTimeForLiveNativeToolHandoff(t *testing.T) 
 	if mcp <= 30*time.Minute {
 		t.Fatalf("native MCP expires before a supported long client tool finishes: %s", mcp)
 	}
-	if mcp > parked-5*time.Minute {
-		t.Fatalf("native MCP timeout %s exceeds parked callback's %s with insufficient cleanup margin", mcp, parked)
+	// The run is let go before its native MCP call could time out, so the
+	// model never answers a tool failure the client did not have; a result
+	// that comes later resumes the run's session (liteParkedBranch).
+	if parked >= mcp {
+		t.Fatalf("parked run %s outlives its native MCP call's %s", parked, mcp)
 	}
 }
 

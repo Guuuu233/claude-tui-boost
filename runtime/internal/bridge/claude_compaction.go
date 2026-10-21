@@ -87,7 +87,15 @@ func writeClaudeTranscript(work, configDir, model string, preface []map[string]a
 		return "", "", err
 	}
 	defer f.Close()
-	parent := ""
+	if err := appendClaudeTranscript(f, id, "", work, model, preface, history, toolPrefix, closing); err != nil {
+		return "", path, err
+	}
+	return id, path, nil
+}
+
+// appendClaudeTranscript writes history (after preface, before closing) to
+// f as rows of session id, the first a child of parent ("" for none).
+func appendClaudeTranscript(f *os.File, id, parent, work, model string, preface []map[string]any, history []Message, toolPrefix, closing string) error {
 	write := func(role string, blocks []map[string]any) error {
 		uuid := randomToken()[:32]
 		row := map[string]any{"type": role, "uuid": uuid, "parentUuid": nil, "sessionId": id, "cwd": work, "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "version": "2.1.300", "isSidechain": false, "userType": "external", "message": map[string]any{"role": role, "content": blocks}}
@@ -108,7 +116,7 @@ func writeClaudeTranscript(work, configDir, model string, preface []map[string]a
 	}
 	if len(preface) > 0 {
 		if err := write("user", preface); err != nil {
-			return "", path, err
+			return err
 		}
 	}
 	for _, m := range history {
@@ -139,18 +147,15 @@ func writeClaudeTranscript(work, configDir, model string, preface []map[string]a
 			role = "user"
 		}
 		if err := write(role, blocks); err != nil {
-			return "", path, err
+			return err
 		}
 	}
 	if closing != "" {
 		if err := write("assistant", []map[string]any{{"type": "text", "text": closing}}); err != nil {
-			return "", path, err
+			return err
 		}
 	}
-	if err := f.Sync(); err != nil {
-		return "", path, err
-	}
-	return id, path, nil
+	return f.Sync()
 }
 func compactionImageBlock(p Part) map[string]any {
 	source := map[string]any{"type": "base64", "media_type": p.MediaType, "data": p.Data}

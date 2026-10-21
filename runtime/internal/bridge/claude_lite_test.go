@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ func scWrapper(t *testing.T) (string, func() []map[string]string) {
 d="$SC_LOG/run-$$"
 mkdir -p "$d"
 printf '%s\n' "$@" > "$d/argv"
+pwd > "$d/cwd"
 cat > "$d/stdin"
 sid=inner-sc
 prev=""
@@ -54,7 +56,7 @@ printf '%s\n' '{"type":"result","session_id":"'$sid'","stop_reason":"end_turn"}'
 		var runs []map[string]string
 		for _, e := range entries {
 			run := map[string]string{}
-			for _, name := range []string{"argv", "stdin", "resume", "seed.jsonl"} {
+			for _, name := range []string{"argv", "stdin", "resume", "seed.jsonl", "cwd"} {
 				if b, err := os.ReadFile(filepath.Join(logs, e.Name(), name)); err == nil {
 					run[name] = strings.TrimSpace(string(b))
 				}
@@ -506,5 +508,144 @@ func TestLiteAlreadyDeliveredToolResultsNotRebuiltInSameProcess(t *testing.T) {
 	}
 	if b.liteToolTurnWasDelivered(scOwner, "other-session", req) {
 		t.Fatal("tool delivery proof crossed conversation identity")
+	}
+}
+
+// A conversation's run let go while it waited on its tool calls leaves its
+// session: their results resume a copy of it, the rows the model saw kept
+// byte for byte (a prefix Anthropic has cached), the results appended where
+// the run would have had them, and what it wrote as it was stopped left out.
+func TestLiteParkedRunLetGoResumesItsOwnSession(t *testing.T) {
+	dir := olDir(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(dir, "claude"))
+	olWrapper(t, dir, "lite-park-bridge", olParkScript())
+	t.Setenv("DAV1878_PARK_RELEASE", filepath.Join(dir, "never"))
+	rt, b := scRuntime(t)
+	tools := `"tools":[{"name":"write_file","input_schema":{"type":"object"}}]`
+	first := `{"model":"claude-opus-5-5","max_tokens":64,` + tools + `,"messages":[{"role":"user","content":"把结果写进 notes.txt"}]}`
+	if code, out := scServe(t, rt, scOuter, first); code != 200 || !strings.Contains(out, `"call_1"`) {
+		t.Fatalf("first turn did not park: %d %s", code, out)
+	}
+	parked := b.interactiveOuterOwner(scOwner, scOuter)
+	if parked == nil {
+		t.Fatal("no parked run owns the conversation")
+	}
+	// The native session as Claude Code saved it: the call row (its input's
+	// keys in Claude Code's order), then what an interrupted run appends.
+	work, err := interactiveSessionWorkDir(scOwner, scOuter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(work) })
+	sessions := claudeSessions("", work)[0]
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	native := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"inner-ol","message":{"role":"user","content":"把结果写进 notes.txt"}}
+{"type":"assistant","uuid":"t0","parentUuid":"u1","sessionId":"inner-ol","message":{"id":"m1","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"SIG"}]}}
+{"type":"assistant","uuid":"t1","parentUuid":"t0","sessionId":"inner-ol","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"mcp__magpie__write_file","input":{"zeta":1,"path":"a"}}]}}
+{"type":"user","uuid":"i1","parentUuid":"t1","sessionId":"inner-ol","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"[Request interrupted by user for tool use]"}]}}
+{"type":"mode","mode":"normal","sessionId":"inner-ol"}
+`
+	if err := os.WriteFile(filepath.Join(sessions, "inner-ol.jsonl"), []byte(native), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parked.abort() // its wait (interactiveParkLongest) is over
+	olWaitReaped(t, parked)
+
+	_, runs := scWrapper(t)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(dir, "claude")) // scWrapper moved it
+	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,`+tools+`,"messages":[
+		{"role":"user","content":"把结果写进 notes.txt"},
+		{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"write_file","input":{"path":"a"}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"WROTE_OK"}]}]}`)
+	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
+		t.Fatalf("results after the run was let go: %d %s", code, out)
+	}
+	run := onlyRun(t, runs())
+	if run["resume"] == "" || run["resume"] == "inner-ol" {
+		t.Fatalf("did not resume a copy of the run's own session: %v", run)
+	}
+	copied := run["seed.jsonl"]
+	for _, kept := range []string{`"signature":"SIG"`, `"input":{"zeta":1,"path":"a"}`, `"sessionId":"` + run["resume"] + `"`, "WROTE_OK", liteResultsReceived} {
+		if !strings.Contains(copied, kept) {
+			t.Fatalf("resumed session lacks %s:\n%s", kept, copied)
+		}
+	}
+	for _, gone := range []string{"interrupted", `"sessionId":"inner-ol"`, `"mode"`} {
+		if strings.Contains(copied, gone) {
+			t.Fatalf("resumed session keeps %s:\n%s", gone, copied)
+		}
+	}
+	if !strings.Contains(run["stdin"], liteContinueText) {
+		t.Fatalf("turn prompt: %q", run["stdin"])
+	}
+	if b, err := os.ReadFile(filepath.Join(sessions, "inner-ol.jsonl")); err != nil || string(b) != native {
+		t.Fatalf("the run's own session was changed: %v", err)
+	}
+}
+
+// Results that are not exactly the let-go run's calls are not resumed into
+// its session: the turn is rebuilt from the request.
+func TestLiteParkedBranchNeedsExactlyItsCalls(t *testing.T) {
+	b := newSubscriptionBridge()
+	t.Cleanup(func() { bridges.Delete(b) })
+	run := &subscriptionRun{interactive: true, owner: scOwner, outerSession: scOuter, model: "claude-opus-5-5",
+		sessionID: "inner-x", closed: true, parkedAt: time.Now(), shown: []shownCall{{id: "call_1"}, {id: "call_2"}}}
+	req, err := parseAnthropic([]byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"go"},{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"echo","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"x"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.interactiveContextKey = turnKey(scOwner, req, nil)
+	b.noteLiteParked(run)
+	if _, _, _, ok := b.liteParkedBranch(scOwner, scOuter, "claude-opus-5-5", req); ok {
+		t.Fatal("one result of two calls resumed the run's session")
+	}
+	b.noteLiteParked(run)
+	if _, _, _, ok := b.liteParkedBranch(scOwner, scOuter, "claude-sonnet-5-5", req); ok {
+		t.Fatal("another model resumed the run's session")
+	}
+}
+
+// Stateless runs, one after another, run in the same fixed folder (Claude
+// Code names its cwd in the system prompt, the head of the cached prefix)
+// and leave no session behind.
+func TestLiteStatelessRunsShareAFixedCwdAndLeaveNoSession(t *testing.T) {
+	_, runs := scWrapper(t)
+	rt, _ := scRuntime(t)
+	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"user","content":"c"}]}`
+	for i := 0; i < 2; i++ {
+		if code, out := scServe(t, rt, "", body); code != 200 || !strings.Contains(out, "SC_ANSWER") {
+			t.Fatalf("stateless %d: %d %s", i, code, out)
+		}
+		// the folder is given back once the run's process is reaped
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			liteStateless.Lock()
+			busy := slices.Contains(liteStateless.busy, true)
+			liteStateless.Unlock()
+			if !busy {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the stateless run's folder was not given back")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	got := runs()
+	if len(got) != 2 || got[0]["cwd"] != got[1]["cwd"] || !strings.Contains(got[0]["cwd"], "magpie-claude-stateless-") {
+		t.Fatalf("stateless runs did not share a fixed cwd: %v / %v", got[0]["cwd"], got[1]["cwd"])
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		left, _ := filepath.Glob(filepath.Join(claudeSessions("", got[0]["cwd"])[0], "*.jsonl"))
+		if len(left) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stateless sessions left: %v", left)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

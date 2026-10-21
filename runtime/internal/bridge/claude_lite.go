@@ -1,13 +1,19 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -314,6 +320,13 @@ func (b *subscriptionBridge) startLite(ctx context.Context, req *Request, model,
 		return nil, nil, err
 	}
 	if outerSession != "" {
+		if id, prompt, images, ok := b.liteParkedBranch(owner, outerSession, model, req); ok {
+			log.Printf("Claude interactive resuming the conversation's own session with its tool results")
+			b.anchorOuterThread(owner, outerSession, req)
+			copied := *req
+			copied.resumedCopy = true
+			return b.startInteractiveWithPromptImages(ctx, &copied, model, "", owner, outerSession, prompt, id, images, false)
+		}
 		saved, savedOK, err := b.loadInteractiveSession(owner, outerSession)
 		if err != nil {
 			return nil, nil, err
@@ -361,45 +374,240 @@ func (b *subscriptionBridge) anchorOuterThread(owner, outerSession string, req *
 // sees them answer its calls; tool calls nothing answers (and answers to no
 // call) are dropped, as the Messages API refuses them.
 func liteSeed(req *Request) (*Request, string, map[string]Part, error) {
-	msgs := req.Messages
-	k := len(msgs)
-	for k > 0 && msgs[k-1].Role != "assistant" {
-		k--
-	}
-	history := slices.Clone(msgs[:k])
-	var turn []Message
-	for _, m := range msgs[k:] {
-		var results, rest []Part
-		for _, p := range m.Parts {
-			if p.Kind == ToolResult {
-				results = append(results, p)
-			} else {
-				rest = append(rest, p)
-			}
-		}
-		if len(results) > 0 {
-			history = append(history, Message{Role: "user", Parts: results})
-		}
-		if len(rest) > 0 {
-			turn = append(turn, Message{Role: m.Role, Parts: rest})
-		}
-	}
-	history = pairedToolTraffic(history)
+	k, results, turn := liteTail(req.Messages)
+	history := pairedToolTraffic(append(slices.Clone(req.Messages[:k]), results...))
 	if n := len(history); n > 0 && history[n-1].Role != "assistant" {
 		history = append(history, Message{Role: "assistant", Parts: []Part{{Kind: Text, Text: liteResultsReceived}}})
 	}
-	if !hasUserText(turn) {
-		turn = append(turn, Message{Role: "user", Parts: []Part{{Kind: Text, Text: liteContinueText}}})
-	}
-	turnReq := *req
-	turnReq.Messages = turn
-	prompt, images, err := renderInteractiveFirstPromptWithImages(&turnReq)
+	prompt, images, err := liteTurnPrompt(req, turn)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	seeded := *req
 	seeded.seedHistory = history
 	return &seeded, prompt, images, nil
+}
+
+// liteTail splits the messages after the last assistant reply (from k) into
+// their tool results, which belong to the history, and the rest: the turn.
+func liteTail(msgs []Message) (k int, results, turn []Message) {
+	k = len(msgs)
+	for k > 0 && msgs[k-1].Role != "assistant" {
+		k--
+	}
+	for _, m := range msgs[k:] {
+		var answers, rest []Part
+		for _, p := range m.Parts {
+			if p.Kind == ToolResult {
+				answers = append(answers, p)
+			} else {
+				rest = append(rest, p)
+			}
+		}
+		if len(answers) > 0 {
+			results = append(results, Message{Role: "user", Parts: answers})
+		}
+		if len(rest) > 0 {
+			turn = append(turn, Message{Role: m.Role, Parts: rest})
+		}
+	}
+	return k, results, turn
+}
+
+// liteTurnPrompt is the prompt a resumed session is given for turn: what the
+// user said, or liteContinueText when the turn is only tool results.
+func liteTurnPrompt(req *Request, turn []Message) (string, map[string]Part, error) {
+	if !hasUserText(turn) {
+		turn = append(turn, Message{Role: "user", Parts: []Part{{Kind: Text, Text: liteContinueText}}})
+	}
+	turnReq := *req
+	turnReq.Messages = turn
+	return renderInteractiveFirstPromptWithImages(&turnReq)
+}
+
+// noteLiteParked keeps r, a conversation's run now waiting on its tool
+// calls, for liteParkedBranch.
+func (b *subscriptionBridge) noteLiteParked(r *subscriptionRun) {
+	if b == nil || !r.interactive || r.outerSession == "" {
+		return
+	}
+	key := interactiveSessionStateKey(r.owner, r.outerSession)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.liteParked == nil {
+		b.liteParked = make(map[string]*subscriptionRun)
+	}
+	for k, old := range b.liteParked {
+		old.mu.Lock()
+		stale := time.Since(old.parkedAt) > claudeCacheTTL
+		old.mu.Unlock()
+		if stale {
+			delete(b.liteParked, k)
+		}
+	}
+	b.liteParked[key] = r
+}
+
+// liteParkedBranch serves the results of a conversation's tool calls whose
+// run was let go while it waited on them (interactiveParkLongest). Its own
+// session is copied up to those calls, the results are appended, and the
+// copy resumed: Anthropic is asked what the run would have asked, a prefix
+// it has cached, where a session rebuilt from the request (liteSeed) would
+// write the whole conversation again. It returns the copy's id and the
+// turn's prompt, or false when req is not exactly those results.
+func (b *subscriptionBridge) liteParkedBranch(owner, outerSession, model string, req *Request) (string, string, map[string]Part, bool) {
+	key := interactiveSessionStateKey(owner, outerSession)
+	b.mu.Lock()
+	run := b.liteParked[key]
+	delete(b.liteParked, key)
+	b.mu.Unlock()
+	if run == nil {
+		return "", "", nil, false
+	}
+	run.mu.Lock()
+	closed, sid, runModel := run.closed, run.sessionID, run.model
+	sameContext := run.interactiveContextKey == turnKey(owner, req, nil)
+	calls := make([]string, 0, len(run.shown))
+	for _, c := range run.shown {
+		calls = append(calls, c.id)
+	}
+	run.mu.Unlock()
+	if !closed || sid == "" || runModel != model || len(calls) == 0 ||
+		!(sameContext || run.interactiveEquivalentContext(req)) || !run.follows(req.Messages) {
+		return "", "", nil, false
+	}
+	_, results, turn := liteTail(req.Messages)
+	answered := map[string]bool{}
+	for _, m := range results {
+		for _, p := range m.Parts {
+			answered[p.CallID] = true
+		}
+	}
+	if len(answered) != len(calls) {
+		return "", "", nil, false
+	}
+	for _, id := range calls {
+		if !answered[id] {
+			return "", "", nil, false
+		}
+	}
+	work, err := interactiveSessionWorkDir(owner, outerSession)
+	if err != nil {
+		return "", "", nil, false
+	}
+	prompt, images, err := liteTurnPrompt(req, turn)
+	if err != nil {
+		return "", "", nil, false
+	}
+	id, err := liteBranchTranscript(work, model, sid, calls, results)
+	if err != nil {
+		log.Printf("Claude interactive could not resume the conversation's own session with its tool results: %v", err)
+		return "", "", nil, false
+	}
+	return id, prompt, images, true
+}
+
+// liteBranchTranscript copies session sid's rows up to the last of its
+// assistant rows calling calls, byte for byte but for the session id, then
+// appends results and liteResultsReceived. What the session wrote after the
+// calls (an interruption, as its run was let go) is left out.
+func liteBranchTranscript(work, model, sid string, calls []string, results []Message) (string, error) {
+	var dir string
+	var data []byte
+	err := os.ErrNotExist
+	for _, d := range claudeSessions("", work) {
+		if data, err = os.ReadFile(filepath.Join(d, sid+".jsonl")); err == nil {
+			dir = d
+			break
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	want := map[string]bool{}
+	for _, c := range calls {
+		want[c] = true
+	}
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	cut, parent, found := -1, "", map[string]bool{}
+	for i, line := range lines {
+		var row struct {
+			Type    string
+			UUID    string
+			Message struct {
+				Content []struct{ Type, ID string }
+			}
+		}
+		if json.Unmarshal(line, &row) != nil || row.Type != "assistant" {
+			continue
+		}
+		for _, c := range row.Message.Content {
+			if c.Type == "tool_use" && want[c.ID] {
+				found[c.ID] = true
+				cut, parent = i, row.UUID
+			}
+		}
+	}
+	if cut < 0 || parent == "" || len(found) != len(want) {
+		return "", fmt.Errorf("session %s does not hold the calls", sid)
+	}
+	id := randomToken()[:32]
+	id = id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-a" + id[17:20] + "-" + id[20:]
+	path := filepath.Join(dir, id+".jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	from, to := []byte(`"sessionId":"`+sid+`"`), []byte(`"sessionId":"`+id+`"`)
+	for _, line := range lines[:cut+1] {
+		line = bytes.ReplaceAll(line, from, to)
+		if !bytes.HasSuffix(line, []byte("\n")) {
+			line = append(line, '\n')
+		}
+		if _, err := f.Write(line); err != nil {
+			_ = os.Remove(path)
+			return "", err
+		}
+	}
+	if err := appendClaudeTranscript(f, id, parent, work, model, nil, results, "", liteResultsReceived); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return id, nil
+}
+
+// Stateless runs borrow fixed cwds, the lowest free first, so one after
+// another runs where the last did and is asked the same system prompt.
+var liteStateless struct {
+	sync.Mutex
+	busy []bool
+}
+
+func liteStatelessWorkDir() (string, func(), error) {
+	liteStateless.Lock()
+	i := slices.Index(liteStateless.busy, false)
+	if i < 0 {
+		i = len(liteStateless.busy)
+		liteStateless.busy = append(liteStateless.busy, true)
+	} else {
+		liteStateless.busy[i] = true
+	}
+	liteStateless.Unlock()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			liteStateless.Lock()
+			liteStateless.busy[i] = false
+			liteStateless.Unlock()
+		})
+	}
+	dir, err := ownedWorkDir(filepath.Join(os.TempDir(), fmt.Sprintf("magpie-claude-stateless-%d", i)))
+	if err != nil {
+		release()
+		return "", func() {}, err
+	}
+	return dir, release, nil
 }
 
 func hasUserText(msgs []Message) bool {

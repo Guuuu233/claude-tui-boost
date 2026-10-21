@@ -98,6 +98,10 @@ type subscriptionBridge struct {
 	// prevents an immediate same-payload replay from being rebuilt as a new
 	// turn; process restarts deliberately require separate recovery evidence.
 	liteCompleted map[string]string
+	// liteParked is each conversation's run last parked on tool calls, by
+	// its state key: once let go, its session is where those calls' results
+	// resume (liteParkedBranch).
+	liteParked map[string]*subscriptionRun
 	// liveOuter holds the same state keys while a canonical interactive run
 	// owns the outer conversation. An HTTP reply can end — and with it the
 	// outerTurns claim — while its PTY run is still alive parked on client
@@ -142,13 +146,13 @@ const (
 // run started with the whole conversation, as its next turn would be.
 var parkLongest = 5 * time.Minute
 
-// An interactive Claude TUI keeps one native process across many MCP
-// handoffs. A long-running client tool (large build, model fitting, etc.)
-// must not inherit parkLongest from one-shot -p sessions: after that timer
-// fires, the native callback is destroyed and Desktop's eventual result
-// becomes an unrecoverable 409. This bounds abandoned PTYs without killing
-// legitimate external work after five minutes.
-const interactiveParkLongest = 90 * time.Minute
+// An interactive Claude TUI run waiting on its client's tool calls holds a
+// native process. Most results come within seconds; one that comes after
+// this is served without it: a conversation's turn resumes the run's own
+// session with the results appended (liteParkedBranch), a stateless one is
+// rebuilt from its request. So the process is not held longer than a tool
+// usually takes.
+const interactiveParkLongest = 5 * time.Minute
 
 // Native interactive work can span many uninterrupted tool rounds; the
 // wrapper also has a finite 12-hour process lifetime. The short 30-minute
@@ -189,6 +193,9 @@ type subscriptionRun struct {
 	outputs []*os.File
 	reading sync.WaitGroup
 	tmp     string
+	// releaseWork, for a stateless interactive run, removes its session
+	// (by its final id) and gives back the fixed cwd it borrowed
+	releaseWork func(sid string)
 	// schema says the client asked for an answer fitting a JSON schema,
 	// which Claude Code gives as its StructuredOutput call
 	schema bool
@@ -1188,6 +1195,7 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
 		return
 	case stop == "tool":
 		r.park()
+		r.bridge.noteLiteParked(r)
 		return // it waits on its tool calls
 	case r.interactive:
 		if stop != "stop" || r.readOnlyToolSignaled() {
@@ -3523,9 +3531,14 @@ func (b *subscriptionBridge) removeRun(run *subscriptionRun) {
 	_ = os.RemoveAll(run.tmp)
 	run.mu.Lock()
 	sid, sessions, shelved := run.sessionID, run.sessions, run.shelved
+	releaseWork := run.releaseWork
+	run.releaseWork = nil
 	run.mu.Unlock()
 	if !shelved {
 		removeSession(sessions, sid)
+	}
+	if releaseWork != nil {
+		releaseWork(sid)
 	}
 }
 

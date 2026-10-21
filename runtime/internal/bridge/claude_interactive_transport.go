@@ -1327,14 +1327,20 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	if err != nil {
 		return nil, nil, err
 	}
-	clean := func() { _ = os.RemoveAll(tmp) }
-	work := tmp
+	release := func() {}
+	clean := func() { _ = os.RemoveAll(tmp); release() }
+	var work string
 	if outerSession != "" {
 		work, err = interactiveSessionWorkDir(owner, outerSession)
-		if err != nil {
-			clean()
-			return nil, nil, err
-		}
+	} else {
+		// Claude Code names its cwd in the system prompt: a stateless run in a
+		// folder of its own would write its whole conversation to the cache
+		// again each time. It borrows a fixed one (liteStatelessWorkDir).
+		work, release, err = liteStatelessWorkDir()
+	}
+	if err != nil {
+		clean()
+		return nil, nil, err
 	}
 	toolsPath := filepath.Join(tmp, "tools.json")
 	toolBytes, _ := json.Marshal(interactiveTools(req, len(images) > 0))
@@ -1357,7 +1363,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	// A session rebuilt from the request's own history is new: there is no
 	// earlier native state of it to mark dirty, and it becomes the checkpoint
 	// only by completing.
-	seeded := false
+	seeded := req.resumedCopy
 	if readOnly && len(req.compactHistory) > 0 {
 		var seedPath string
 		resumeID, seedPath, err = writeCompactionTranscript(work, configDir, req)
@@ -1497,6 +1503,16 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	}
 	run.nativeLease = nativeLease
 	leaseTransferred = true // run.finish/removeRun now owns its release
+	if outerSession == "" {
+		// Nothing resumes a stateless run's session: removeRun deletes it and
+		// gives the folder back.
+		dirs, seed := claudeSessions(configDir, work), resumeID
+		run.releaseWork = func(sid string) {
+			removeSession(dirs, seed)
+			removeSession(dirs, sid)
+			release()
+		}
+	}
 	for _, tool := range interactiveTools(req, len(images) > 0) {
 		run.tools[tool.Name] = true
 	}
