@@ -112,8 +112,15 @@ func TestExactInteractiveToolGrowthPassesHTTPHandoffWithoutReplay(t *testing.T) 
 	}
 	run.mu.Lock()
 	added := run.tools["new_tool"]
+	contextKey := run.interactiveContextKey
 	run.mu.Unlock()
 	if !added {
 		t.Fatal("added tool was not registered for subsequent native handoffs")
+	}
+	if contextKey != turnKey(owner, req, nil) || !run.interactiveEquivalentContext(req) {
+		t.Fatal("accepted tool growth was not committed as the run's current context")
+	}
+	if !run.offers(req.Tools) && !run.exactInteractiveToolGrowth(owner, req, byExactID) {
+		t.Fatal("the accepted expanded tool set was not retained for the next handoff")
 	}
 }

@@ -1,3 +1,13 @@
+# v0.2.11 — stable MCP tool growth across successive handoffs
+
+During a live turn, Claude Desktop can add MCP resource tools after the native run has already started. v0.2.10 accepted the first exact-ID handoff and updated the helper's tool set, but retained the earlier context snapshot; a later handoff in the same turn could then return HTTP 409. v0.2.11 advances the stored context only after the expanded tools have been successfully delivered to the existing native run.
+
+The fix preserves tool-result ownership, owner/model validation, the original tool definitions, native-process exclusivity and protection against replaying completed tools. It does not migrate checkpoints or restart a native run.
+
+Validation: the focused Go regression for successive handoffs after dynamic tool growth passes. Release CI performs the packaged-runtime checks and reproducible binary verification.
+
+## Previous release
+
 # v0.2.10 — live MCP handoff compatibility
 
 Includes all v0.2.9 recovery and tool-handoff fixes.
