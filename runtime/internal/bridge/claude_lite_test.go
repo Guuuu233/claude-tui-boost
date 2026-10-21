@@ -463,8 +463,8 @@ func TestLiteVisibleToolHandoffRejectsWrongOrPartialResults(t *testing.T) {
 }
 
 // Tool results sent again after their reply was delivered (a client retry,
-// a side call on the conversation's identity) are answered, stateless: no
-// 409, and the conversation's checkpoint stays as that reply left it.
+// a side call on the conversation's identity) receive the already completed
+// answer: no 409, no second PTY, and no checkpoint change.
 func TestLiteRepeatOfDeliveredToolResultsIsAnsweredStateless(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
@@ -474,14 +474,14 @@ func TestLiteRepeatOfDeliveredToolResultsIsAnsweredStateless(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.noteLiteCompletedToolTurn(scOwner, scOuter, req)
+	b.noteLiteCompletedToolTurn(scOwner, scOuter, req, "SC_ANSWER")
 	before, _, _ := b.loadInteractiveSession(scOwner, scOuter)
 	code, out := scServe(t, rt, scOuter, body)
 	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
 		t.Fatalf("repeat refused: %d %s", code, out)
 	}
-	if run := onlyRun(t, runs()); run["resume"] == "inner-saved" {
-		t.Fatalf("the repeat ran in the conversation's session: %v", run)
+	if got := runs(); len(got) != 0 {
+		t.Fatalf("a completed duplicate started another native run: %v", got)
 	}
 	if after, _, _ := b.loadInteractiveSession(scOwner, scOuter); after != before {
 		t.Fatalf("a repeat changed the conversation checkpoint: %+v -> %+v", before, after)
