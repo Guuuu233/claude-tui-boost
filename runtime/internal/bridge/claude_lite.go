@@ -278,6 +278,7 @@ func (b *subscriptionBridge) startLite(ctx context.Context, req *Request, model,
 	if err != nil {
 		return nil, nil, err
 	}
+	log.Printf("Claude interactive starting a native session rebuilt from the request: history=%d stateless=%t", len(seeded.seedHistory), outerSession == "")
 	return b.startInteractiveWithPromptImages(ctx, seeded, model, "", owner, outerSession, prompt, "", images, false)
 }
 
