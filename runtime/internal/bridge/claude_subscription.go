@@ -94,6 +94,10 @@ type subscriptionBridge struct {
 	// turn they are. In-memory only: a restart clears it, and the worst a
 	// replay can buy is one more read-only turn.
 	outerTurns map[string]bool
+	// Last successfully delivered tool-result request per live process. It
+	// prevents an immediate same-payload replay from being rebuilt as a new
+	// turn; process restarts deliberately require separate recovery evidence.
+	liteCompleted map[string]string
 	// liveOuter holds the same state keys while a canonical interactive run
 	// owns the outer conversation. An HTTP reply can end — and with it the
 	// outerTurns claim — while its PTY run is still alive parked on client
@@ -1222,6 +1226,7 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
 				r.mu.Lock()
 				r.terminalDelivered = true
 				r.mu.Unlock()
+				r.bridge.noteLiteCompletedToolTurn(r.owner, outerSession, req)
 			}
 		}
 		return

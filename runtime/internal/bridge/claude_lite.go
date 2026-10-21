@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -52,6 +53,18 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		return writeError(w, protoAnthropic, http.StatusBadRequest, err.Error()), err.Error()
 	}
 	req.Model = model
+	// Rebuilding is not permission to erase a mismatched tool result. When
+	// the caller's visible final assistant turn contains tool_use, every
+	// returned ID must match that turn, even if the old native run is gone.
+	// Compacted histories without a visible call remain eligible for rebuild.
+	if err := liteVisibleToolHandoff(req); err != nil {
+		msg := "Claude interactive tool result does not match its visible tool call; refusing"
+		return writeError(w, protoAnthropic, http.StatusConflict, msg), msg
+	}
+	if rt.bridge.liteToolTurnWasDelivered(owner, outerSession, req) {
+		msg := "Claude interactive tool results already delivered; refusing duplicate continuation"
+		return writeError(w, protoAnthropic, http.StatusConflict, msg), msg
+	}
 	upstream := func() (int, string) {
 		start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
 			return rt.bridge.startInteractiveRequest(ctx, req, model, "", owner, outerSession)
@@ -137,6 +150,70 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		}
 		run.ended(req, said, stop, ok)
 	})
+}
+
+func (b *subscriptionBridge) noteLiteCompletedToolTurn(owner, outerSession string, req *Request) {
+	if b == nil || outerSession == "" || req == nil || !interactiveToolContinuation(req) {
+		return
+	}
+	key := interactiveSessionStateKey(owner, outerSession)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.liteCompleted == nil || len(b.liteCompleted) >= 1024 {
+		b.liteCompleted = make(map[string]string)
+	}
+	b.liteCompleted[key] = historyKey(req.Messages)
+}
+
+func (b *subscriptionBridge) liteToolTurnWasDelivered(owner, outerSession string, req *Request) bool {
+	if b == nil || outerSession == "" || req == nil || !interactiveToolContinuation(req) {
+		return false
+	}
+	key := interactiveSessionStateKey(owner, outerSession)
+	b.mu.Lock()
+	prior := b.liteCompleted[key]
+	b.mu.Unlock()
+	return prior != "" && prior == historyKey(req.Messages)
+}
+
+func liteVisibleToolHandoff(req *Request) error {
+	if req == nil {
+		return errors.New("missing request")
+	}
+	clean, _, err := interactiveRequestWithoutSystem(req)
+	if err != nil {
+		return err
+	}
+	end := len(clean.Messages)
+	userStart := end
+	for userStart > 0 && clean.Messages[userStart-1].Role == "user" {
+		userStart--
+	}
+	if userStart == end {
+		return nil
+	}
+	assistantStart := userStart
+	for assistantStart > 0 && clean.Messages[assistantStart-1].Role == "assistant" {
+		assistantStart--
+	}
+	if assistantStart == userStart {
+		return nil // compacted result with no visible assistant: cannot verify
+	}
+	visibleCall, returned := false, false
+	for _, m := range clean.Messages[assistantStart:userStart] {
+		for _, p := range m.Parts {
+			visibleCall = visibleCall || p.Kind == ToolCall
+		}
+	}
+	for _, m := range clean.Messages[userStart:] {
+		for _, p := range m.Parts {
+			returned = returned || p.Kind == ToolResult
+		}
+	}
+	if visibleCall && returned {
+		return validateInteractiveToolContinuation(clean)
+	}
+	return nil
 }
 
 // liteContinues reports whether req exactly continues run: the same owner,

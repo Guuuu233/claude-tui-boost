@@ -430,3 +430,55 @@ func TestLiteSignedStatelessSessionHasNoConversation(t *testing.T) {
 		t.Fatal("the plugin and runtime must agree on the stateless marker")
 	}
 }
+
+func TestLiteVisibleToolHandoffRejectsWrongOrPartialResults(t *testing.T) {
+	request := func(t *testing.T, history string) *Request {
+		t.Helper()
+		req, err := parseAnthropic([]byte(`{"model":"claude-opus-5-5","max_tokens":32,"messages":` + history + `}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	const prefix = `[{"role":"user","content":"do task"},{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"echo","input":{}}]},`
+	for name, tc := range map[string]struct {
+		history string
+		valid   bool
+	}{
+		"verified":                {prefix + `{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"done"}]}]`, true},
+		"mismatched":              {prefix + `{"role":"user","content":[{"type":"tool_result","tool_use_id":"forged","content":"done"}]}]`, false},
+		"duplicated":              {prefix + `{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"done"},{"type":"tool_result","tool_use_id":"call-1","content":"again"}]}]`, false},
+		"orphan-after-compaction": {`[{"role":"user","content":"compacted earlier work"},{"role":"assistant","content":"summary"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"earlier-call","content":"done"}]}]`, true},
+		"ordinary-text":           {`[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"continue"}]`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := liteVisibleToolHandoff(request(t, tc.history))
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%t, err=%v", tc.valid, err)
+			}
+		})
+	}
+}
+
+func TestLiteAlreadyDeliveredToolResultsNotRebuiltInSameProcess(t *testing.T) {
+	b := &subscriptionBridge{}
+	req, err := parseAnthropic([]byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"run"},{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"echo","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"finished"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.liteToolTurnWasDelivered(scOwner, scOuter, req) {
+		t.Fatal("unseen result must be eligible for first delivery")
+	}
+	b.noteLiteCompletedToolTurn(scOwner, scOuter, req)
+	if !b.liteToolTurnWasDelivered(scOwner, scOuter, req) {
+		t.Fatal("already delivered result was accepted again")
+	}
+	next := *req
+	next.Messages = append(append([]Message(nil), req.Messages...), Message{Role: "user", Parts: []Part{{Kind: Text, Text: "continue"}}})
+	if b.liteToolTurnWasDelivered(scOwner, scOuter, &next) {
+		t.Fatal("a genuine additional user message was classified as replay")
+	}
+	if b.liteToolTurnWasDelivered(scOwner, "other-session", req) {
+		t.Fatal("tool delivery proof crossed conversation identity")
+	}
+}
