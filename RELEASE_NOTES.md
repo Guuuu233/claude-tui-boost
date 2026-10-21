@@ -1,3 +1,18 @@
+# v0.2.10 — live MCP handoff compatibility
+
+Includes all v0.2.9 recovery and tool-handoff fixes.
+
+- Continue a verified live tool handoff when only tool-list order, JSON object-key order/whitespace, or the billing header omitted from native instructions has changed.
+- Compare Safeguards by JSON content rather than raw formatting; preserve array order and exact numeric values.
+- Keep effective system instructions, tool descriptions/definitions, effort, owner/model, history, durable execution records and native-process ownership checks.
+- Add boolean-only context and effort difference diagnostics; never log prompts, tool arguments or raw effort values.
+
+Validation: targeted Go race tests passed. The exact Linux artifact passed four real Mac gateway → NTT native Claude/MCP requests and two distinct Mac read-only tool executions, including representation changes during handoff and a new tool on the next turn. The test checkpoint became clean and the original historical dirty checkpoint remained unchanged. Release automation separately verifies package contracts, Go race/vet checks and reproducible platform binaries.
+
+Limits: this is not a claim that the original damaged Desktop session recovered or that the exact field behind the earlier production 409 has been identified. No checkpoint migration, Magpie core upgrade, Science Canary changes or 2 MiB compaction experiment is included.
+
+## Previous release
+
 # v0.2.9 — bounded recovery and reliable live MCP handoffs
 
 This release includes the GTT orphanfix baseline and the complete NTT recovery/handoff fixes, on top of v0.2.8 and main's native input-limit error handling. Machine-local configuration, credentials, recovery certificates and checkpoints remain local.
