@@ -30,3 +30,7 @@ These tests used an independent HTTP client, not Desktop UI automation. Recovery
 The publication branch retains main's native input-limit helper and its original regression tests. All 75 Bun tests pass with the pinned Magpie host contract enabled. All eight platform executables were rebuilt using Go 1.27.1 and the reproducible release flags; the checksum manifest and extracted npm archive pass integrity verification. Raw operator audit files are not part of the branch.
 
 The combined publication tree also passes `go test -race -p 2 ./... -count=1 -timeout=240s` (bridge: 133.329 seconds) and `go vet -p 2 ./...`.
+
+## Exact publication artifact acceptance
+
+After publication-tree synchronization, the Linux AMD64 Runtime SHA-256 `1710c624bba72f890ec2def58b1e86a5e6da532a0c244b31bf54c3db83911b63` was deployed and verified on NTT. All 175 tracked files at `cadb3b0` matched individually. Fresh JSON and SSE sessions again completed eight HTTP 200 requests and four actual Mac read-only executions, with both new checkpoints clean. The original damaged checkpoint was unchanged. The historical `713a8fa8` build above is superseded by this exact-artifact check. Version 0.2.9 changes release metadata only on top of the tested implementation.
