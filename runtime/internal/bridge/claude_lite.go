@@ -61,9 +61,13 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		msg := "Claude interactive tool result does not match its visible tool call; refusing"
 		return writeError(w, protoAnthropic, http.StatusConflict, msg), msg
 	}
+	// The same tool results again, after their reply was delivered: a client
+	// retrying, or its side call on the conversation's identity. It is
+	// answered from its own history, beside the conversation, which keeps
+	// the native session and checkpoint that reply left.
 	if rt.bridge.liteToolTurnWasDelivered(owner, outerSession, req) {
-		msg := "Claude interactive tool results already delivered; refusing duplicate continuation"
-		return writeError(w, protoAnthropic, http.StatusConflict, msg), msg
+		log.Printf("Claude interactive tool results already answered on this conversation; serving the repeat stateless")
+		outerSession = ""
 	}
 	upstream := func() (int, string) {
 		start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
@@ -136,6 +140,12 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 	gone := context.AfterFunc(r.Context(), func() {
 		letting.Store(true)
 		log.Printf("Claude Code run on %s stopped: the client went away %s into the reply", model, time.Since(began).Round(time.Millisecond))
+		// A stateless run belongs to no conversation that could take it up
+		// again: it is stopped, not kept waiting for its client.
+		if outerSession == "" {
+			run.abort()
+			return
+		}
 		run.letGoFor(events)
 	})
 	defer gone()

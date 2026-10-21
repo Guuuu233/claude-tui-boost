@@ -460,6 +460,32 @@ func TestLiteVisibleToolHandoffRejectsWrongOrPartialResults(t *testing.T) {
 	}
 }
 
+// Tool results sent again after their reply was delivered (a client retry,
+// a side call on the conversation's identity) are answered, stateless: no
+// 409, and the conversation's checkpoint stays as that reply left it.
+func TestLiteRepeatOfDeliveredToolResultsIsAnsweredStateless(t *testing.T) {
+	_, runs := scWrapper(t)
+	rt, b := scRuntime(t)
+	scSaveClean(t, b, "inner-saved", false)
+	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"run"},{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"echo","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"finished"}]}]}`
+	req, err := parseAnthropic([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.noteLiteCompletedToolTurn(scOwner, scOuter, req)
+	before, _, _ := b.loadInteractiveSession(scOwner, scOuter)
+	code, out := scServe(t, rt, scOuter, body)
+	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
+		t.Fatalf("repeat refused: %d %s", code, out)
+	}
+	if run := onlyRun(t, runs()); run["resume"] == "inner-saved" {
+		t.Fatalf("the repeat ran in the conversation's session: %v", run)
+	}
+	if after, _, _ := b.loadInteractiveSession(scOwner, scOuter); after != before {
+		t.Fatalf("a repeat changed the conversation checkpoint: %+v -> %+v", before, after)
+	}
+}
+
 func TestLiteAlreadyDeliveredToolResultsNotRebuiltInSameProcess(t *testing.T) {
 	b := &subscriptionBridge{}
 	req, err := parseAnthropic([]byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"run"},{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"echo","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"finished"}]}]}`))
