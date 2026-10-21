@@ -64,11 +64,13 @@ func TestExactInteractiveToolGrowthPassesHTTPHandoffWithoutReplay(t *testing.T) 
 	owner, outer := "owner", "tool-growth"
 	initial := *req
 	initial.Tools = req.Tools[:1]
+	initial.System = "x-anthropic-billing-header: cc_version=1; cch=old;"
+	snapshot := interactiveContextDiagnosticFromRequest(&initial)
 	b := newSubscriptionBridge()
 	defer bridges.Delete(b)
 	waiter := make(chan mcpToolResult, 1)
 	run := &subscriptionRun{bridge: b, token: "live-tool-growth", owner: owner, outerSession: outer,
-		model: req.Model, interactive: true, effort: req.Effort,
+		model: req.Model, interactive: true, effort: req.Effort, interactiveContextSnapshot: &snapshot,
 		interactiveContextKey: turnKey(owner, &initial, nil),
 		tools:                 map[string]bool{"echo": true}, shown: []shownCall{{id: "known-call", name: "echo", args: "{}"}},
 		pending: map[string]chan mcpToolResult{"known-call": waiter}, parkedAt: time.Now(),

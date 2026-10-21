@@ -9,11 +9,13 @@ import (
 
 // Only fixed boolean categories are ever logged. Keep the raw system prompt,
 // tool descriptions/schemas and hashes out of diagnostics. This snapshot is
-// immutable once the native run begins and is never used to authorize tools.
+// immutable once the native run begins; equivalentKey also compares harmless
+// representation changes without weakening ownership or tool-result checks.
 type interactiveContextDiagnosticSnapshot struct {
 	system, tools, unorderedTools, toolChoice, schema [32]byte
 	thinkOff, webSearch, effortSet                    bool
 	effort                                            [32]byte
+	equivalentKey                                     string
 }
 
 func interactiveContextDiagnosticFromRequest(req *Request) interactiveContextDiagnosticSnapshot {
@@ -29,6 +31,7 @@ func interactiveContextDiagnosticFromRequest(req *Request) interactiveContextDia
 	sort.Strings(perTool)
 	unordered, _ := json.Marshal(perTool)
 	return interactiveContextDiagnosticSnapshot{
+		equivalentKey:  interactiveEquivalentContextKey(req),
 		effort:         sha256.Sum256([]byte(req.Effort)),
 		system:         sha256.Sum256([]byte(req.System)),
 		tools:          sha256.Sum256(tools),

@@ -3850,7 +3850,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			run.mu.Lock()
 			currentKey, currentEffort := run.interactiveContextKey, run.effort
 			run.mu.Unlock()
-			sameContext := (currentKey == turnKey(owner, req, nil) && currentEffort == req.Effort) ||
+			sameContext := (currentKey == turnKey(owner, req, nil) && currentEffort == req.Effort) || run.interactiveEquivalentContext(req) ||
 				run.exactInteractiveToolGrowth(owner, req, how)
 			if !sameContext {
 				msg := "Claude interactive migration: settings or tool schema changed while a PTY tool was running"
@@ -3879,7 +3879,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		if run.interactive {
 			run.mu.Lock()
 			parked := !run.parkedAt.IsZero()
-			sameSafeguards := bytes.Equal(run.safeguards, req.Safeguards) &&
+			sameSafeguards := interactiveSameSafeguards(run.safeguards, req.Safeguards) &&
 				(len(req.Safeguards) == 0 || run.safeguardBeta == req.SafeguardBeta)
 			run.mu.Unlock()
 			saved, checkpointExists, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
@@ -3965,7 +3965,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			}
 		}
 		if run.interactive {
-			if !bytes.Equal(run.safeguards, req.Safeguards) ||
+			if !interactiveSameSafeguards(run.safeguards, req.Safeguards) ||
 				(len(req.Safeguards) > 0 && run.safeguardBeta != req.SafeguardBeta) {
 				run.abort()
 				msg := "Claude interactive migration: safeguards changed during an in-flight MCP turn"
