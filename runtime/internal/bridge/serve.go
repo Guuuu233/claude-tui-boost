@@ -158,6 +158,10 @@ func (rt *runtimeTUI) serveSignedMessages(w http.ResponseWriter, r *http.Request
 	// derives it from the caller's own session label and signs it, so it
 	// is the canonical key checkpoint matching uses. sessionOf(r.Header)
 	// would read agent headers the plugin's fetch does not forward.
+	if session == statelessSession {
+		// The plugin found no stable conversation id: a request of its own.
+		session = ""
+	}
 	rt.serveMessages(w, r, model, session, body, &usage)
 }
 

@@ -3546,9 +3546,13 @@ func ownerAccount(owner string) (user string, own bool) {
 // and the model name comes from the request, validated against
 // Config.Models by the caller.
 func (rt *runtimeTUI) serveMessages(w http.ResponseWriter, r *http.Request, model, outerSession string, body []byte, usage *Usage) (int, string) {
-	if science, helper := scienceOuter(outerSession); science {
-		return rt.serveScience(w, r, model, outerSession, helper, body, usage)
-	}
+	return rt.serveLite(w, r, model, outerSession, body, usage)
+}
+
+// serveMessagesUpstream is the handler as upstream wrote it, before
+// serveLite's request-is-the-truth policy; tests of upstream behaviour
+// drive it directly.
+func (rt *runtimeTUI) serveMessagesUpstream(w http.ResponseWriter, r *http.Request, model, outerSession string, body []byte, usage *Usage) (int, string) {
 	owner := "claude-tui\x00default"
 	start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
 		// configDir "" means Claude Code's own sign-in home (~/.claude or
@@ -4149,6 +4153,7 @@ func relay(w http.ResponseWriter, r *http.Request, from string, name string, req
 				} else if quotaWords.MatchString(msg) {
 					code = 429
 				}
+				code = liteStatus(code, msg)
 			}
 			return writeError(w, from, code, name+": "+msg), msg
 		}
@@ -4215,6 +4220,7 @@ func relay(w http.ResponseWriter, r *http.Request, from string, name string, req
 		} else if quotaWords.MatchString(col.err) {
 			code = 429
 		}
+		code = liteStatus(code, col.err)
 		return writeError(w, from, code, name+": "+col.err), col.err
 	}
 	ended(said, stop, col.err == "" && r.Context().Err() == nil)

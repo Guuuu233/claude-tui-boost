@@ -8,11 +8,14 @@ export const PROVIDER_ID = "claude-tui";
 const sha = value => createHash("sha256").update(value).digest("hex");
 const mac = (key, value) => createHmac("sha256", key).update(value).digest("hex");
 const generatedSession = /^magpie-[a-f0-9]{24}$/;
+// A request without a stable conversation id of its own is served stateless,
+// as the Messages API serves every request, instead of being refused.
+const STATELESS = sha("magpie-interactive-bridge/stateless");
 
 function stableSession(value) {
   if (typeof value !== "string" || !value || value.length > 512 ||
       /[\r\n\0]/.test(value) || generatedSession.test(value)) {
-    throw new Error("Claude TUI requires an explicit stable conversation id");
+    return STATELESS;
   }
   return sha("magpie-interactive-bridge/v1\0" + value);
 }
@@ -149,18 +152,19 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
               throw new Error("Claude TUI accepts only the configured messages endpoint");
             }
             if (request.signal.aborted) throw request.signal.reason;
-            const digest = request.headers.get("x-g3-hook-session");
+            const hooked = request.headers.get("x-g3-hook-session");
             const signature = request.headers.get("x-g3-hook-proof");
-            // Host hooks swallow their errors. Requiring the internal proof
-            // keeps missing/invalid session context from starting a runtime.
-            if (!/^[a-f0-9]{64}$/.test(digest ?? "") ||
+            // No session context from the hook: a stateless request. Context
+            // that is present must carry this plugin's own proof.
+            const digest = hooked === null && signature === null ? STATELESS : hooked;
+            if (digest !== STATELESS && (!/^[a-f0-9]{64}$/.test(digest ?? "") ||
                 !/^[a-f0-9]{64}$/.test(signature ?? "") ||
-                !timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(proof(digest), "hex"))) {
+                !timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(proof(digest), "hex")))) {
               throw new Error("Claude TUI conversation context was not supplied by its hook");
             }
             const body = await boundedBody(request);
             if (request.signal.aborted) throw request.signal.reason;
-            const session = mac(key, "magpie-bridge-account/v1\0" + digest);
+            const session = digest === STATELESS ? "stateless" : mac(key, "magpie-bridge-account/v1\0" + digest);
             const timestamp = String(Math.floor(Date.now() / 1000));
             const nonce = randomBytes(16).toString("hex");
             const canonical = ["bridge-auth-v1", "POST", "/v1/messages",

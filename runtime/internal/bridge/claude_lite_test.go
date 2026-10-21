@@ -13,7 +13,7 @@ import (
 )
 
 const scOwner = "claude-tui\x00default"
-const scOuter = "science-0b6f3c1e-7a2d-4c55-9e10-3f2a8d4b6c71"
+const scOuter = "5b0e2c7a9d4f61e8a3b2c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4"
 
 // scWrapper stands in for the native PTY wrapper: it records each start's
 // argv, prompt and — when it is told to --resume — the session file it
@@ -107,29 +107,9 @@ func onlyRun(t *testing.T, runs []map[string]string) map[string]string {
 	return runs[0]
 }
 
-func TestScienceOuterLabels(t *testing.T) {
-	for label, want := range map[string][2]bool{
-		scOuter:                      {true, false},
-		scOuter + "-fork":            {true, true},
-		scOuter + "-aux-mem":         {true, true},
-		scOuter + "-aux-Mem":         {false, false},
-		"science-not-a-uuid":         {false, false},
-		"outer-desktop":              {false, false},
-		strings.ToUpper(scOuter):     {false, false},
-		scOuter + "-aux-" + "x/y":    {false, false},
-		"x" + scOuter:                {false, false},
-		scOuter + "-fork-sniff_lane": {true, true},
-	} {
-		science, helper := scienceOuter(label)
-		if science != want[0] || helper != want[1] {
-			t.Errorf("%q: science=%t helper=%t, want %v", label, science, helper, want)
-		}
-	}
-}
-
 // The request that continues its clean checkpoint exactly resumes that
 // native session with only the new turn: no rebuild.
-func TestScienceExactCheckpointResumes(t *testing.T) {
+func TestLiteExactCheckpointResumes(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
 	scSaveClean(t, b, "inner-saved", false)
@@ -150,7 +130,7 @@ func TestScienceExactCheckpointResumes(t *testing.T) {
 // A history Science rewrote (its own compaction, an edit) no longer
 // follows the checkpoint. It is answered from a session rebuilt from that
 // history — the 502 this used to be is gone.
-func TestScienceRewrittenHistoryRebuildsInsteadOfRefusing(t *testing.T) {
+func TestLiteRewrittenHistoryRebuildsInsteadOfRefusing(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
 	scSaveClean(t, b, "inner-saved", false)
@@ -180,7 +160,7 @@ func TestScienceRewrittenHistoryRebuildsInsteadOfRefusing(t *testing.T) {
 
 // A turn cut off (client gone, quota, crash) leaves a dirty checkpoint;
 // the next request is rebuilt from what Science has, not refused.
-func TestScienceDirtyCheckpointRebuilds(t *testing.T) {
+func TestLiteDirtyCheckpointRebuilds(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
 	scSaveClean(t, b, "inner-saved", true)
@@ -197,7 +177,7 @@ func TestScienceDirtyCheckpointRebuilds(t *testing.T) {
 // Tool results whose native run is gone (a tool that ran longer than the
 // run waited, a runtime restart) continue in a rebuilt session that sees
 // its call answered — not the old 409 "no matching live MCP run".
-func TestScienceOrphanToolResultRebuildsWithStructuredHistory(t *testing.T) {
+func TestLiteOrphanToolResultRebuildsWithStructuredHistory(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, _ := scRuntime(t)
 	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,
@@ -216,13 +196,13 @@ func TestScienceOrphanToolResultRebuildsWithStructuredHistory(t *testing.T) {
 			t.Fatalf("seed lacks %s: %s", want, seed)
 		}
 	}
-	if !strings.Contains(run["stdin"], scienceContinueText) {
+	if !strings.Contains(run["stdin"], liteContinueText) {
 		t.Fatalf("a results-only turn was not told to continue: %q", run["stdin"])
 	}
 	// The seed must not end on the user's message, or Claude Code answers it
 	// itself ("No response requested.") into the reply.
 	lines := strings.Split(seed, "\n")
-	if last := lines[len(lines)-1]; !strings.Contains(last, `"type":"assistant"`) || !strings.Contains(last, scienceResultsReceived) {
+	if last := lines[len(lines)-1]; !strings.Contains(last, `"type":"assistant"`) || !strings.Contains(last, liteResultsReceived) {
 		t.Fatalf("seed does not end with an assistant row: %s", last)
 	}
 	if strings.Contains(run["argv"], "python analyze.py") || strings.Contains(run["stdin"], "python analyze.py") {
@@ -233,7 +213,7 @@ func TestScienceOrphanToolResultRebuildsWithStructuredHistory(t *testing.T) {
 // Science's mid-turn message: it reports the tool calls it did not run as
 // not_dispatched and sends the user's words beside them. With no live run
 // both reach the rebuilt session — results in history, words as the turn.
-func TestScienceInterjectionWithoutLiveRunKeepsTheUsersWords(t *testing.T) {
+func TestLiteInterjectionWithoutLiveRunKeepsTheUsersWords(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, _ := scRuntime(t)
 	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,
@@ -248,7 +228,7 @@ func TestScienceInterjectionWithoutLiveRunKeepsTheUsersWords(t *testing.T) {
 		t.Fatalf("interjection was refused: %d %s", code, out)
 	}
 	run := onlyRun(t, runs())
-	if !strings.Contains(run["stdin"], "先别训练 b，改成只比较 a") || strings.Contains(run["stdin"], scienceContinueText) {
+	if !strings.Contains(run["stdin"], "先别训练 b，改成只比较 a") || strings.Contains(run["stdin"], liteContinueText) {
 		t.Fatalf("the user's words were not the turn: %q", run["stdin"])
 	}
 	if !strings.Contains(run["seed.jsonl"], "not_dispatched") || !strings.Contains(run["seed.jsonl"], "a done") {
@@ -259,7 +239,7 @@ func TestScienceInterjectionWithoutLiveRunKeepsTheUsersWords(t *testing.T) {
 // A run parked on a tool call Science's next request does not answer (the
 // user stopped, Science moved on) is stopped and the request answered —
 // where Desktop's path refuses with 409 to protect a live tool.
-func TestScienceNewTurnStopsAParkedRunInsteadOf409(t *testing.T) {
+func TestLiteNewTurnStopsAParkedRunInsteadOf409(t *testing.T) {
 	dir := olDir(t)
 	olWrapper(t, dir, "sc-park-bridge", olParkScript())
 	rt, b := scRuntime(t)
@@ -287,35 +267,43 @@ func TestScienceNewTurnStopsAParkedRunInsteadOf409(t *testing.T) {
 	onlyRun(t, runs())
 }
 
-// Another request still holding the conversation past the wait is told to
-// retry with a 503 — never a 409 that reads as a broken conversation.
-func TestScienceBusyConversationAsksForRetry(t *testing.T) {
-	scWrapper(t)
+// A conversation another request still holds past the wait is answered
+// stateless — never refused, and never touching its checkpoint.
+func TestLiteBusyConversationIsServedStateless(t *testing.T) {
+	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
-	old := scienceTurnWait
-	scienceTurnWait = 200 * time.Millisecond
-	t.Cleanup(func() { scienceTurnWait = old })
+	old := liteTurnWait
+	liteTurnWait = 200 * time.Millisecond
+	t.Cleanup(func() { liteTurnWait = old })
+	scSaveClean(t, b, "inner-saved", false)
+	before, _, _ := b.loadInteractiveSession(scOwner, scOuter)
 	if !b.claimInteractiveOuterTurn(scOwner, scOuter) {
 		t.Fatal("claim")
 	}
 	defer b.releaseInteractiveOuterTurn(scOwner, scOuter)
-	rec := httptest.NewRecorder()
-	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`
-	code, _ := rt.serveMessages(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), "claude-opus-5-5", scOuter, []byte(body), &Usage{})
-	if code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
-		t.Fatalf("busy conversation: %d retry-after=%q", code, rec.Header().Get("Retry-After"))
+	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,"messages":[
+		{"role":"user","content":"先读一下配置"},{"role":"assistant","content":"配置已读"},{"role":"user","content":"继续"}]}`)
+	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
+		t.Fatalf("busy conversation: %d %s", code, out)
+	}
+	if run := onlyRun(t, runs()); run["resume"] == "inner-saved" {
+		t.Fatalf("a stateless answer resumed the busy conversation's session: %v", run)
+	}
+	after, _, _ := b.loadInteractiveSession(scOwner, scOuter)
+	if after != before {
+		t.Fatalf("a stateless answer changed the checkpoint: %+v -> %+v", before, after)
 	}
 }
 
-// Helper calls (memory extraction forks of the agent's view, compaction
-// folds) run on a session rebuilt from their history and never touch the
-// conversation's checkpoint.
-func TestScienceHelperForkIsStatelessAndSeeded(t *testing.T) {
+// A request without a conversation id (helper calls such as memory
+// extraction forks) runs on a session rebuilt from its own history and never
+// touches any conversation's checkpoint.
+func TestLiteStatelessRequestIsSeeded(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
 	scSaveClean(t, b, "inner-saved", false)
 	before, _, _ := b.loadInteractiveSession(scOwner, scOuter)
-	code, out := scServe(t, rt, scOuter+"-fork", `{"model":"claude-opus-5-5","max_tokens":64,"tool_choice":{"type":"none"},
+	code, out := scServe(t, rt, "", `{"model":"claude-opus-5-5","max_tokens":64,"tool_choice":{"type":"none"},
 		"tools":[{"name":"Bash","input_schema":{"type":"object"}}],
 		"messages":[
 		{"role":"user","content":"先读一下配置"},
@@ -339,7 +327,7 @@ func TestScienceHelperForkIsStatelessAndSeeded(t *testing.T) {
 	}
 }
 
-func TestSciencePairedToolTraffic(t *testing.T) {
+func TestLitePairedToolTraffic(t *testing.T) {
 	msgs := []Message{
 		{Role: "user", Parts: []Part{{Kind: Text, Text: "go"}}},
 		{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: "a", Name: "Bash"}, {Kind: ToolCall, ID: "lost", Name: "Bash"}}},
@@ -357,19 +345,108 @@ func TestSciencePairedToolTraffic(t *testing.T) {
 	}
 }
 
-// Desktop and Claude Code conversations keep upstream's behaviour.
-func TestNonScienceOuterKeepsUpstreamPath(t *testing.T) {
-	scWrapper(t)
+// A helper call reusing the conversation id for another thread (Desktop
+// titles, subagents) keeps upstream's routing: stateless, the checkpoint
+// untouched.
+func TestLiteOtherThreadOnTheConversationIdRunsStateless(t *testing.T) {
+	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
-	outer := "outer-desktop"
-	if !b.claimInteractiveOuterTurn(scOwner, outer) {
-		t.Fatal("claim")
+	scSaveClean(t, b, "inner-saved", false)
+	b.anchorOuterThread(scOwner, scOuter, &Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "先读一下配置"}}}}})
+	before, _, _ := b.loadInteractiveSession(scOwner, scOuter)
+	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,"messages":[
+		{"role":"user","content":"Explore the repository and list its packages"},{"role":"assistant","content":"Looking"},{"role":"user","content":"go on"}]}`)
+	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
+		t.Fatalf("helper: %d %s", code, out)
 	}
-	defer b.releaseInteractiveOuterTurn(scOwner, outer)
-	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`
-	rec := httptest.NewRecorder()
-	code, _ := rt.serveMessages(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)).WithContext(context.Background()), "claude-opus-5-5", outer, []byte(body), &Usage{})
-	if code != http.StatusConflict {
-		t.Fatalf("Desktop busy conversation: %d, want upstream's 409", code)
+	onlyRun(t, runs())
+	after, _, _ := b.loadInteractiveSession(scOwner, scOuter)
+	if after != before {
+		t.Fatalf("a helper thread changed the conversation checkpoint: %+v -> %+v", before, after)
+	}
+}
+
+// A run parked on tool calls the new request does not carry belongs to a
+// conversation turn still in progress (its client is running the tools):
+// the request is answered stateless and the parked run is left alone.
+func TestLiteUnrelatedRequestLeavesAParkedRunAlone(t *testing.T) {
+	dir := olDir(t)
+	olWrapper(t, dir, "lite-park-bridge", olParkScript())
+	rt, b := scRuntime(t)
+	old := liteTurnWait
+	liteTurnWait = 300 * time.Millisecond
+	t.Cleanup(func() { liteTurnWait = old })
+	t.Setenv("DAV1878_PARK_RELEASE", filepath.Join(dir, "never"))
+	first := `{"model":"claude-opus-5-5","max_tokens":64,"tools":[{"name":"write_file","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"把结果写进 notes.txt"}]}`
+	if code, out := scServe(t, rt, scOuter, first); code != 200 || !strings.Contains(out, `"type":"tool_use"`) {
+		t.Fatalf("first turn did not park: %d %s", code, out)
+	}
+	parked := b.interactiveOuterOwner(scOwner, scOuter)
+	if parked == nil {
+		t.Fatal("no parked run")
+	}
+	// Register the live call as the MCP helper would.
+	go func() {
+		w := httptest.NewRecorder()
+		mr := httptest.NewRequest("POST", "/_magpie/claude-mcp/"+parked.token,
+			strings.NewReader(`{"tool_call_id":"call_1","name":"write_file","arguments":{"path":"a"}}`))
+		mr = mr.WithContext(context.WithValue(mr.Context(), mcpTokenKey{}, parked.token))
+		b.mcpCall(w, mr)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		parked.mu.Lock()
+		n := len(parked.pending)
+		parked.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the parked call never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, runs := scWrapper(t)
+	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"把结果写进 notes.txt"},{"role":"assistant","content":"x"},{"role":"user","content":"unrelated"}]}`)
+	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
+		t.Fatalf("unrelated request: %d %s", code, out)
+	}
+	parked.mu.Lock()
+	closed := parked.closed
+	parked.mu.Unlock()
+	if closed {
+		t.Fatal("an unrelated request stopped the parked run")
+	}
+	onlyRun(t, runs())
+}
+
+// Claude Code reports a reached usage limit as a synthetic API error with the
+// generic 502; clients must see 429 so they wait instead of retrying at once.
+func TestLiteUsageLimitIs429(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(dir, "claude"))
+	p := filepath.Join(dir, "limit-bridge")
+	os.WriteFile(p, []byte("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"assistant\",\"isApiErrorMessage\":true,\"session_id\":\"s\",\"message\":{\"model\":\"<synthetic>\",\"content\":[{\"type\":\"text\",\"text\":\"You have hit your session limit \u00b7 resets 5am (UTC)\"}]}}'\nprintf '%s\\n' '{\"type\":\"result\",\"session_id\":\"s\",\"is_error\":true,\"result\":\"You have hit your session limit\"}'\n"), 0o700)
+	t.Setenv(interactiveBridgeEnv, p)
+	rt, _ := scRuntime(t)
+	for _, stream := range []string{"true", "false"} {
+		code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,"stream":`+stream+`,"messages":[{"role":"user","content":"hi"}]}`)
+		if code != http.StatusTooManyRequests || !strings.Contains(out, "session limit") {
+			t.Fatalf("stream=%s: usage limit answered %d %s", stream, code, out)
+		}
+	}
+	if liteStatus(http.StatusBadGateway, "prompt is too long: exceeded context") != http.StatusBadGateway {
+		t.Fatal("a context overflow was taken for a usage limit")
+	}
+	if liteStatus(http.StatusBadRequest, "rate limit") != http.StatusBadRequest {
+		t.Fatal("a definite status was overridden")
+	}
+}
+
+// The plugin's stateless marker reaches serveMessages as no conversation.
+func TestLiteSignedStatelessSessionHasNoConversation(t *testing.T) {
+	if statelessSession != "stateless" {
+		t.Fatal("the plugin and runtime must agree on the stateless marker")
 	}
 }

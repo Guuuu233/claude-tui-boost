@@ -40,15 +40,23 @@ test('stable session is tied to a private HMAC and native transport response is 
   assert.equal(hdr.has('authorization'), false, 'the credential must not be leaked in transport headers');
 });
 
-test('missing or synthetic session id fails before signing or fetching', async () => {
-  let calls = 0;
-  const x = make(async () => { calls++; return new Response('should not run'); });
-  for (const id of ['', null, 'magpie-' + 'f'.repeat(24), 'invalid\nheader']) {
-    assert.throws(() => x.stamp(id), /explicit stable conversation id/);
-  }
+test('missing or synthetic session id runs stateless instead of failing', async () => {
+  const seen = [];
+  const x = make(async (target, args) => { seen.push(new Headers(args.headers)); return new Response('ok'); });
   const loader = await x.load();
-  await assert.rejects(loader.fetch(url + 'messages', { method: 'POST', body }), /conversation context was not supplied by its hook/);
-  assert.equal(calls, 0);
+  for (const id of ['', null, 'magpie-' + 'f'.repeat(24), 'invalid\nheader']) {
+    x.out.headers = {};
+    x.stamp(id);
+    await loader.fetch(url + 'messages', { method: 'POST', headers: x.out.headers, body });
+  }
+  // No hook context at all: also stateless.
+  await loader.fetch(url + 'messages', { method: 'POST', body });
+  assert.equal(seen.length, 5);
+  for (const hdr of seen) {
+    assert.equal(hdr.get('x-bridge-session'), 'stateless');
+    const canonical = ['bridge-auth-v1', 'POST', '/v1/messages', hdr.get('x-bridge-timestamp'), hdr.get('x-bridge-nonce'), 'stateless', sha(body)].join('\n');
+    assert.equal(hdr.get('x-bridge-mac'), sign(key, canonical), 'the stateless marker is signed like any session');
+  }
 });
 
 test('a forged hook session/proof cannot start a runtime request', async () => {
