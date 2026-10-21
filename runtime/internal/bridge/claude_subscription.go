@@ -3821,11 +3821,22 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		// If its callback has expired, do not fall through to start() and
 		// replay the whole caller history into a fresh session or claude -p.
 		if run == nil || !run.interactive || run.owner != owner || run.model != model ||
-			!run.offers(req.Tools) {
+			(!run.offers(req.Tools) && !run.exactInteractiveToolGrowth(owner, req, how)) {
 			if recoveryCurrent < 0 && recoveryIdx < 0 {
-				log.Printf("Claude interactive orphan tool handoff rejected: recovery_candidate=%d %s", recoveryCurrent, interactiveRecoveryDiagnostic(req))
-				msg := "Claude interactive migration: no matching live MCP run; refusing history replay"
-				return writeError(w, from, http.StatusConflict, msg), msg
+				if rt.bridge.beginOrphanReadOnlyRecovery(owner, outerSession, model, req) {
+					req = interactiveSanitizeReadOnly(req)
+					recoveryIdx = interactiveReadOnlyOptInIndex(req)
+					if recoveryIdx < 0 {
+						msg := "Claude interactive recovery sentinel refused; not replaying an uncertain tool"
+						return writeError(w, from, http.StatusConflict, msg), msg
+					}
+				} else {
+					log.Printf("Claude interactive orphan tool handoff rejected: recovery_candidate=%d match_reason=%q live_run=%t interactive=%t owner_match=%t model_match=%t tools_match=%t %s", recoveryCurrent, how,
+						run != nil, run != nil && run.interactive, run != nil && run.owner == owner,
+						run != nil && run.model == model, run != nil && run.offers(req.Tools), interactiveRecoveryDiagnostic(req))
+					msg := "Claude interactive migration: no matching live MCP run; refusing history replay"
+					return writeError(w, from, http.StatusConflict, msg), msg
+				}
 			}
 		} else {
 			// Shape checks are meaningful only after tool ids proved which live
@@ -3836,8 +3847,10 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 				return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 			}
 			run.mu.Lock()
-			sameContext := run.interactiveContextKey == turnKey(owner, req, nil) && run.effort == req.Effort
+			currentKey, currentEffort := run.interactiveContextKey, run.effort
 			run.mu.Unlock()
+			sameContext := (currentKey == turnKey(owner, req, nil) && currentEffort == req.Effort) ||
+				run.exactInteractiveToolGrowth(owner, req, how)
 			if !sameContext {
 				msg := "Claude interactive migration: settings or tool schema changed while a PTY tool was running"
 				log.Print(msg)

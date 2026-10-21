@@ -20,6 +20,7 @@ package bridge
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -33,6 +34,54 @@ var interactiveOptInRecoveryTexts = map[string]bool{
 	"先只读核对刚才结果，不要重复执行": true,
 }
 
+// Claude's unknown-command fallback is generated as a user-role attachment.
+// It is safe to ignore for admission only when the WHOLE reminder matches
+// the known explanatory template: it is never recovery intent by itself.
+const interactiveUnknownSlashCommandNotice = "The user's message starts with a slash command, but no command with that name is available in this session, so it did not run."
+
+const interactiveUnknownSlashCommandLongPrefix = "The user's message starts with the slash command /magpie-recover, but no command with that name is available in this session, so it did not run. Slash commands available in this session: "
+const interactiveUnknownSlashCommandLongSuffix = ". Treat the message as a plain request and do the task with the tools you have. If the task needs that command, tell the user it is not installed in this session. The user can add it as an organization plugin or a project skill. Do not give installation steps you are not sure of. Do not say the command ran."
+
+var interactiveFallbackCommandName = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$`)
+var interactiveFallbackCommandRemainder = regexp.MustCompile(`^and [1-9][0-9]{0,4} more$`)
+
+func interactiveKnownUnknownSlashCommandNotice(s string) bool {
+	if len(s) > 8192 {
+		return false
+	}
+	s = strings.TrimSpace(s)
+	const open, close = "<system-reminder>", "</system-reminder>"
+	if !strings.HasPrefix(s, open) || !strings.HasSuffix(s, close) {
+		return false
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(s, open), close)
+	body = strings.TrimSpace(strings.ReplaceAll(body, `\n`, "\n"))
+	if body == interactiveUnknownSlashCommandNotice {
+		return true
+	}
+	commands, ok := strings.CutPrefix(body, interactiveUnknownSlashCommandLongPrefix)
+	if !ok {
+		return false
+	}
+	commands, ok = strings.CutSuffix(commands, interactiveUnknownSlashCommandLongSuffix)
+	if !ok {
+		return false
+	}
+	names := strings.Split(commands, ", ")
+	if len(names) == 0 || len(names) > 65 {
+		return false
+	}
+	for i, name := range names {
+		if i > 0 && i == len(names)-1 && interactiveFallbackCommandRemainder.MatchString(name) {
+			continue
+		}
+		if !interactiveFallbackCommandName.MatchString(name) {
+			return false
+		}
+	}
+	return true
+}
+
 // interactiveOptInRecoveryIndex returns the original request index of the
 // user message carrying an explicit opt-in sentinel, or -1.
 //
@@ -42,12 +91,12 @@ var interactiveOptInRecoveryTexts = map[string]bool{
 //   - a trailing all-interrupt-marker user row is skipped, so a Desktop
 //     "[Request interrupted by user]" trailer after the opt-in does not
 //     defeat it;
-//   - exactly one Text part in that message may carry the sentinel, and it
-//     must be the message's last standalone Text part — ordinary text
-//     after the sentinel means the request is ambiguous and stays 409;
-//   - interrupt-marker / empty / thinking content around the sentinel is
-//     tolerated; anything else (system-reminder, suggestion-mode, tool_use
-//     text, a second distinct ordinary text) is not;
+//   - a single exact sentinel is the usual case; two identical slash-command
+//     sentinels are accepted only with two exact unknown-command notices;
+//     the final sentinel must be the last standalone Text part;
+//   - interrupt-marker / empty / thinking content and exact Desktop unknown
+//     slash-command notices are tolerated; other reminders, suggestion-mode
+//     and tool-use text are not;
 //   - the sentinel is matched by exact trimmed equality only, never by
 //     substring, and tool_result bodies are never searched (they are a
 //     different Part kind, so they cannot reach the match);
@@ -67,6 +116,9 @@ func interactiveOptInRecoveryIndex(req *Request) int {
 		return -1
 	}
 	sentinel, lastText := -1, -1
+	markerCount, fallbackCount := 0, 0
+	fallbackAfterLastMarker := false
+	chosenMarker := ""
 	for i, p := range msgs[end].Parts {
 		switch p.Kind {
 		case Thinking:
@@ -79,15 +131,27 @@ func interactiveOptInRecoveryIndex(req *Request) int {
 			if strings.HasPrefix(s, "[Request interrupted by user]") {
 				continue
 			}
+			if interactiveKnownUnknownSlashCommandNotice(s) {
+				fallbackCount++
+				if sentinel >= 0 {
+					fallbackAfterLastMarker = true
+				}
+				continue
+			}
 			if strings.Contains(s, "<system-reminder>") || strings.HasPrefix(s, "[SUGGESTION MODE:") {
 				return -1
 			}
 			lastText = i
 			if interactiveOptInRecoveryTexts[s] {
-				if sentinel >= 0 {
-					return -1 // two opt-in claims in one message are ambiguous
+				markerCount++
+				if markerCount > 2 || (chosenMarker != "" && chosenMarker != s) {
+					return -1
+				}
+				if chosenMarker == "" {
+					chosenMarker = s
 				}
 				sentinel = i
+				fallbackAfterLastMarker = false
 			}
 		case ToolResult, Image:
 			// The merged-row shape this gate exists for. ToolResult bodies
@@ -98,7 +162,9 @@ func interactiveOptInRecoveryIndex(req *Request) int {
 			return -1
 		}
 	}
-	if sentinel < 0 || sentinel != lastText {
+	if sentinel < 0 || sentinel != lastText || fallbackAfterLastMarker ||
+		(fallbackCount != 0 && (chosenMarker != "/magpie-recover" || fallbackCount != markerCount)) ||
+		(markerCount == 2 && fallbackCount != 2) {
 		return -1
 	}
 	return positions[end]
@@ -128,7 +194,7 @@ func interactiveReadOnlyOptInIndex(req *Request) int {
 	if end < 0 || !interactiveRecoveryUserMessage(msgs[end]) {
 		return -1
 	}
-	sentinel, lastText := -1, -1
+	sentinel, lastText, markerCount := -1, -1, 0
 	for i, p := range msgs[end].Parts {
 		if p.Kind != Text {
 			continue
@@ -142,10 +208,11 @@ func interactiveReadOnlyOptInIndex(req *Request) int {
 		}
 		lastText = i
 		if interactiveOptInRecoveryTexts[s] {
+			markerCount++
 			sentinel = i
 		}
 	}
-	if sentinel < 0 || sentinel != lastText {
+	if markerCount != 1 || sentinel < 0 || sentinel != lastText {
 		return -1
 	}
 	return positions[end]
@@ -208,8 +275,9 @@ func renderInteractiveReadOnlyBootstrap(req *Request) (string, error) {
 			// Merged tool traffic stays historical; a sentinel row does not
 			// have to contain it (pure-text opt-in is allowed too).
 		case Text:
-			if strings.TrimSpace(p.Text) != "" &&
-				!strings.HasPrefix(strings.TrimSpace(p.Text), "[Request interrupted by user]") {
+			s := strings.TrimSpace(p.Text)
+			if s != "" && !strings.HasPrefix(s, "[Request interrupted by user]") &&
+				!interactiveKnownUnknownSlashCommandNotice(s) {
 				lastText = i
 			}
 		case Thinking:
@@ -265,7 +333,8 @@ func renderInteractiveReadOnlyBootstrap(req *Request) (string, error) {
 		if i == lastText {
 			break
 		}
-		if p.Kind == Text {
+		if p.Kind == Text && !interactiveKnownUnknownSlashCommandNotice(p.Text) &&
+			!interactiveOptInRecoveryTexts[strings.TrimSpace(p.Text)] {
 			companion.WriteString(p.Text)
 		}
 	}

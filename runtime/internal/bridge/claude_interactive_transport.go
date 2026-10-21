@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,8 +43,11 @@ func interactiveMCPConfig(helperExe string, helperArgv []string, callback, tools
 	config, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"magpie": map[string]any{
 			"command": helperExe,
-			"args":    append(slices.Clone(helperArgv), callback, toolsPath),
-			"timeout": interactiveMCPToolTimeoutMS,
+			// This server is the native run's complete tool surface. The
+			// CLI must join its initial tools/list before submitting a prompt.
+			"alwaysLoad": true,
+			"args":       append(slices.Clone(helperArgv), callback, toolsPath),
+			"timeout":    interactiveMCPToolTimeoutMS,
 		},
 	}})
 	return string(config)
@@ -786,7 +790,13 @@ func (b *subscriptionBridge) startInteractiveRequest(ctx context.Context, req *R
 		if status == interactiveRestoreStateInvalid {
 			return nil, nil, errInteractiveSessionStoreInvalid
 		}
-		if !verified || (saved.Model != "" && saved.Model != model) {
+		// A bounded dirty recovery cannot match the rewritten history. Keep
+		// it canonical so the tool-free turn can replace that checkpoint.
+		// It still passes the model and live-owner fences below; ordinary
+		// unverified helpers retain an empty outer session.
+		boundedRecovery := savedOK && saved.Dirty &&
+			(interactiveReadOnlyOptInIndex(req) >= 0 || interactiveAbandonedToolRecoveryIndex(req) >= 0)
+		if (!verified && !boundedRecovery) || (saved.Model != "" && saved.Model != model) {
 			return b.startInteractiveAuxiliaryRequest(ctx, req, model, configDir, owner)
 		}
 	}
@@ -1632,19 +1642,21 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 	for scanner.Scan() {
 		pmu.Lock()
 		var msg struct {
-			Type             string          `json:"type"`
-			UUID             string          `json:"uuid"`
-			SessionID        string          `json:"session_id"`
-			RateLimitInfo    json.RawMessage `json:"rate_limit_info"`
-			IsError          bool            `json:"is_error"`
-			Result           string          `json:"result"`
-			ErrorField       json.RawMessage `json:"error"`
-			APIErrorStatus   int             `json:"api_error_status"`
-			Subtype          string          `json:"subtype"`
-			Errors           []string        `json:"errors"`
-			StructuredOutput json.RawMessage `json:"structured_output"`
-			StopReason       string          `json:"stop_reason"`
-			Message          struct {
+			Type              string          `json:"type"`
+			UUID              string          `json:"uuid"`
+			SessionID         string          `json:"session_id"`
+			RateLimitInfo     json.RawMessage `json:"rate_limit_info"`
+			IsError           bool            `json:"is_error"`
+			IsAPIErrorMessage bool            `json:"isApiErrorMessage"`
+			APIErrorStatus    int             `json:"api_error_status"`
+			ErrorKind         json.RawMessage `json:"error"`
+			RequestID         string          `json:"request_id"`
+			Result            string          `json:"result"`
+			Subtype           string          `json:"subtype"`
+			Errors            []string        `json:"errors"`
+			StructuredOutput  json.RawMessage `json:"structured_output"`
+			StopReason        string          `json:"stop_reason"`
+			Message           struct {
 				ID      string   `json:"id"`
 				Model   string   `json:"model"`
 				Usage   cliUsage `json:"usage"`
@@ -1692,6 +1704,36 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 				config.NoteLimits(user, claudeLimits(msg.RateLimitInfo))
 			}
 		case "assistant":
+			// The PTY wrapper can reshape a native API-error row into an
+			// assistant event and even synthesize a successful terminal result.
+			// Older wrappers drop isApiErrorMessage, but retain <synthetic>.
+			// Fail before emitting text so relay cannot commit a clean checkpoint.
+			var apiErrorText string
+			for _, block := range msg.Message.Content {
+				if block.Type == "text" {
+					apiErrorText += block.Text
+				}
+			}
+			if msg.IsAPIErrorMessage || (msg.Message.Model == "<synthetic>" && strings.HasPrefix(strings.TrimSpace(apiErrorText), "API Error:")) {
+				if apiErrorText == "" {
+					apiErrorText = "Claude Code reported an upstream API error"
+				}
+				status, code := http.StatusBadGateway, "upstream_api_error"
+				if msg.IsAPIErrorMessage {
+					var nativeKind string
+					_ = json.Unmarshal(msg.ErrorKind, &nativeKind)
+					if nativeKind == "invalid_request" || nativeKind == "invalid_request_error" {
+						status, code = http.StatusBadRequest, "invalid_request_error"
+					}
+					if msg.APIErrorStatus >= 400 && msg.APIErrorStatus <= 599 {
+						status = msg.APIErrorStatus
+					}
+				}
+				r.emit(Event{Kind: KError, Text: apiErrorText, Status: status, Code: code, RequestID: msg.RequestID})
+				r.endSegment()
+				pmu.Unlock()
+				return
+			}
 			if r.readOnlyRecovery && msg.Message.Model == "<synthetic>" {
 				pmu.Unlock()
 				continue
@@ -1850,7 +1892,7 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 			if r.schema {
 				switch {
 				case msg.IsError:
-					why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorField)
+					why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorKind)
 					if why == "" {
 						why = "Claude Code gave no answer fitting the schema"
 						if msg.Subtype != "" {
@@ -1868,7 +1910,7 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 					r.emit(Event{Kind: KStop, Stop: "stop"})
 				}
 			} else if msg.IsError || !started || !sawText || stopFromAnthropic(msg.StopReason) != "stop" {
-				why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorField)
+				why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorKind)
 				if why == "" {
 					why = "Claude interactive wrapper ended without a complete text answer"
 				}

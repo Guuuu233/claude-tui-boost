@@ -1,3 +1,20 @@
+# v0.2.9 — bounded recovery and reliable live MCP handoffs
+
+This release includes the GTT orphanfix baseline and the complete NTT recovery/handoff fixes, on top of v0.2.8 and main's native input-limit error handling. Machine-local configuration, credentials, recovery certificates and checkpoints remain local.
+
+- Keep already-authorized bounded dirty read-only recovery canonical after Desktop history-prefix changes; retain checkpoint, model and owner checks.
+- Recognize only strictly matched Desktop unknown-command reminders around explicit recovery markers, and remove those wrappers from recovery context.
+- Accept additive tool declarations during an exact live call-ID handoff while preserving existing schemas, ordering, owner/model, context, effort and replay protection. Do not restart Claude or replay an executed tool.
+- Wait for the private MCP tool list before native input, with bounded startup timing and explicit native environment overrides.
+- Preserve native API error metadata and input-limit diagnostics; report invalid requests as HTTP 400 rather than successful text or misleading retryable transport errors.
+- Add bounded structural rejection diagnostics without prompt bodies or tool arguments. Ship all four Runtime and four MCP Helper platforms with SHA-256 checksums.
+
+Validation: 75 Bun tests, full Go race tests and go vet passed; all eight binaries and the complete installable archive passed integrity checks. The exact Linux artifact was additionally exercised through the real Mac gateway and NTT native Claude/MCP using JSON and SSE: eight successful requests, four actual Mac read-only tool executions, additive tool handoffs and clean new checkpoints. No historical tool was replayed.
+
+Limits: the original damaged Desktop conversation remains unrecovered, Rewind identity/branch continuity remains unverified, and extended long-context/80-minute-idle acceptance is not claimed. This release does not import the separate Science Canary experiments, clear dirty state, weaken recovery admission, or enable the 2 MiB compaction experiment.
+
+## Previous release
+
 # v0.2.8 — Claude Desktop continuity and checkpoint safety
 
 Stable package release of the rc.3 candidate, retaining its underlying Runtime and MCP Helper behavior. The implementation remains unofficial and experimental for complex long-lived Desktop sessions. Limits listed below are still open and are not waived by the stable version label.

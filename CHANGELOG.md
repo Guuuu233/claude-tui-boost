@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.9 — recovery and live MCP handoff fixes (2026-10-21)
+
+- Include the GTT orphan read-only recovery baseline and NTT canonical recovery, strict Desktop reminder compatibility, exact live additive tool handoffs, MCP startup readiness and native API error propagation.
+- Preserve checkpoint integrity, ownership/model/schema checks and all v0.2.8 fixes; add privacy-safe rejection diagnostics and regression coverage.
+- Publish all platform executables and a complete installable archive; retain the documented original-session and Rewind acceptance limits.
+
 ## 0.2.8 — stable package release (2026-10-18)
 
 - Promote the reviewed v0.2.8-rc.3 behavior to a non-prerelease installable package after merging PR #6; preserve the compiled Go Runtime and MCP Helper.

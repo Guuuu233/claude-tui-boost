@@ -39,3 +39,19 @@ func TestInteractiveMCPDeadlineLeavesTimeForLiveNativeToolHandoff(t *testing.T) 
 		t.Fatalf("native MCP timeout %s exceeds parked callback's %s with insufficient cleanup margin", mcp, parked)
 	}
 }
+
+// The isolated Magpie MCP server is the native model's entire tool surface.
+// Loading it in the background can send the first API request with zero tools.
+func TestInteractiveMCPConfigRequiresToolsBeforeFirstPrompt(t *testing.T) {
+	var c struct {
+		MCPServers map[string]struct {
+			AlwaysLoad bool `json:"alwaysLoad"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(interactiveMCPConfig("/helper", nil, "http://127.0.0.1/cb", "/tools")), &c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.MCPServers["magpie"].AlwaysLoad {
+		t.Fatal("Magpie tools may be deferred past the first native prompt")
+	}
+}

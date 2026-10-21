@@ -37,7 +37,7 @@ test("actual vendored Claude wrapper uses the foreground MCP environment builder
   expect(source).toContain("...nativeAutoCompactionLaunchEnv(process.env).envArgs");
   expect(source).toContain("...nativeAutoCompactionLaunchEnv(process.env).unsetEnvArgs");
   expect(source).toContain("buildClaudeLaunchCommand({");
-  expect(interactiveMcpBackgroundEnvArgs()).toEqual(["CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0"]);
+  expect(interactiveMcpBackgroundEnvArgs()).toContain("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0");
 });
 
 test("real native child receives client-owned auto-compaction setting even with stale tmux environment", () => {
@@ -68,4 +68,17 @@ test("real native child receives client-owned auto-compaction setting even with 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("native MCP startup waits for the required tool inventory despite a stale tmux server", () => {
+  const root = mkdtempSync(join(tmpdir(), "magpie-native-mcp-ready-"));
+  try {
+    const shim = join(root, "claude");
+    const report = join(root, "seen");
+    writeFileSync(shim, "#!/bin/sh\nprintf '%s\\n' \"${CLAUDE_CODE_MCP_ALWAYS_LOAD_JOIN_BEFORE_INPUT-unset}\" \"${CLAUDE_CODE_MCP_STARTUP_WAIT_MS-unset}\" > \"$1\"\n", {mode: 0o700});
+    const cmd = buildClaudeLaunchCommand({claudePath: shim, claudeArgs: [report], unsetEnvArgs: [], envArgs: interactiveMcpBackgroundEnvArgs(), exitStatusPath: join(root,"status"), holdMs:1});
+    const child = Bun.spawnSync(["/bin/sh","-c",cmd],{env:{...process.env, HOME:root, CLAUDE_CODE_MCP_ALWAYS_LOAD_JOIN_BEFORE_INPUT:"0",CLAUDE_CODE_MCP_STARTUP_WAIT_MS:"0"}});
+    expect(child.exitCode).toBe(0);
+    expect(readFileSync(report,"utf8").trim()).toBe("1\n30000");
+  } finally { rmSync(root,{recursive:true,force:true}); }
 });
