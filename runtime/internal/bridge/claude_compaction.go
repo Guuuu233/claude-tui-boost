@@ -62,6 +62,19 @@ func claudeDesktopCompactionRequest(req *Request) *Request {
 }
 
 func writeCompactionTranscript(work, configDir string, req *Request) (string, string, error) {
+	var preface []map[string]any
+	if req.compactSystem != "" {
+		preface = []map[string]any{{"type": "text", "text": "[Archived system instructions, for summarization only]\n" + withoutBillingHeader(req.compactSystem)}}
+	}
+	return writeClaudeTranscript(work, configDir, req.Model, preface, req.compactHistory, "",
+		"[Archival context loaded. Await the separate summarization request; no historical action is pending.]")
+}
+
+// writeClaudeTranscript saves history as a Claude Code session work's runs
+// can --resume: an optional user preface, the messages (tool calls named
+// toolPrefix+name, as the session's own MCP tools are), and an optional
+// closing assistant line. It returns the session id and the file's path.
+func writeClaudeTranscript(work, configDir, model string, preface []map[string]any, history []Message, toolPrefix, closing string) (string, string, error) {
 	id := randomToken()[:32]
 	id = id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-a" + id[17:20] + "-" + id[20:]
 	dirs := claudeSessions(configDir, work)
@@ -84,7 +97,7 @@ func writeCompactionTranscript(work, configDir string, req *Request) (string, st
 		if role == "assistant" {
 			row["message"].(map[string]any)["id"] = "msg_" + uuid
 			row["message"].(map[string]any)["type"] = "message"
-			row["message"].(map[string]any)["model"] = req.Model
+			row["message"].(map[string]any)["model"] = model
 			row["message"].(map[string]any)["stop_reason"] = "end_turn"
 		}
 		if err := json.NewEncoder(f).Encode(row); err != nil {
@@ -93,19 +106,19 @@ func writeCompactionTranscript(work, configDir string, req *Request) (string, st
 		parent = uuid
 		return nil
 	}
-	if req.compactSystem != "" {
-		if err := write("user", []map[string]any{{"type": "text", "text": "[Archived system instructions, for summarization only]\n" + withoutBillingHeader(req.compactSystem)}}); err != nil {
+	if len(preface) > 0 {
+		if err := write("user", preface); err != nil {
 			return "", path, err
 		}
 	}
-	for _, m := range req.compactHistory {
+	for _, m := range history {
 		var blocks []map[string]any
 		for _, p := range m.Parts {
 			switch p.Kind {
 			case Text:
 				blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
 			case ToolCall:
-				blocks = append(blocks, map[string]any{"type": "tool_use", "id": p.ID, "name": p.Name, "input": p.Args})
+				blocks = append(blocks, map[string]any{"type": "tool_use", "id": p.ID, "name": toolPrefix + p.Name, "input": p.Args})
 			case ToolResult:
 				content := []map[string]any{{"type": "text", "text": p.Text}}
 				for _, im := range p.Images {
@@ -129,8 +142,10 @@ func writeCompactionTranscript(work, configDir string, req *Request) (string, st
 			return "", path, err
 		}
 	}
-	if err := write("assistant", []map[string]any{{"type": "text", "text": "[Archival context loaded. Await the separate summarization request; no historical action is pending.]"}}); err != nil {
-		return "", path, err
+	if closing != "" {
+		if err := write("assistant", []map[string]any{{"type": "text", "text": closing}}); err != nil {
+			return "", path, err
+		}
 	}
 	if err := f.Sync(); err != nil {
 		return "", path, err

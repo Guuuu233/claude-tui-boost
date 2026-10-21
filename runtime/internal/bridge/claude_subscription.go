@@ -3546,6 +3546,9 @@ func ownerAccount(owner string) (user string, own bool) {
 // and the model name comes from the request, validated against
 // Config.Models by the caller.
 func (rt *runtimeTUI) serveMessages(w http.ResponseWriter, r *http.Request, model, outerSession string, body []byte, usage *Usage) (int, string) {
+	if science, helper := scienceOuter(outerSession); science {
+		return rt.serveScience(w, r, model, outerSession, helper, body, usage)
+	}
 	owner := "claude-tui\x00default"
 	start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
 		// configDir "" means Claude Code's own sign-in home (~/.claude or

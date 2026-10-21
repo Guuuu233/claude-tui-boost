@@ -1354,9 +1354,25 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	if len(req.Schema) > 0 {
 		args = append(args, "--json-schema", string(req.Schema))
 	}
+	// A session rebuilt from the request's own history is new: there is no
+	// earlier native state of it to mark dirty, and it becomes the checkpoint
+	// only by completing.
+	seeded := false
 	if readOnly && len(req.compactHistory) > 0 {
 		var seedPath string
 		resumeID, seedPath, err = writeCompactionTranscript(work, configDir, req)
+		if err != nil {
+			clean()
+			if seedPath != "" {
+				_ = os.Remove(seedPath)
+			}
+			return nil, nil, err
+		}
+		args = append(args, "--resume", resumeID)
+	} else if len(req.seedHistory) > 0 && resumeID == "" {
+		seeded = true
+		var seedPath string
+		resumeID, seedPath, err = writeClaudeTranscript(work, configDir, model, nil, req.seedHistory, "mcp__magpie__", "")
 		if err != nil {
 			clean()
 			if seedPath != "" {
@@ -1416,7 +1432,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 			releaseInteractiveNativeLease(nativeLease)
 		}
 	}()
-	if resumeID != "" && outerSession != "" {
+	if resumeID != "" && outerSession != "" && !seeded {
 		// Before the resume's first possible side effect, the canonical
 		// checkpoint becomes dirty. In ledger mode the lease above prevents
 		// a second Runtime from dirtying another process's clean result.
