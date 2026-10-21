@@ -1,3 +1,20 @@
+# v0.2.12 — lightweight sessions, bounded tool parking, and cache-friendly resume
+
+This release promotes the `tui-lite` Runtime and signed Magpie plugin together, including the fixes validated on GTT/NTT production under the same Runtime SHA-256. It builds on all v0.2.11 MCP context and security protections.
+
+- Use the client-provided structured history to reconstruct otherwise unrecoverable conversation turns while keeping signed owner/session routing, live-call tool ownership, a single active native run per canonical conversation, and safeguards. A reconstructed model can still *request* a tool again; this is not a general exactly-once execution guarantee.
+- Reject mismatched visible tool-result IDs, protect completed handoffs against duplicate native execution, and handle repeated deliveries without restarting an unsafe tool. Serialize busy main-conversation turns; isolate short auxiliary requests.
+- Return native Claude usage limits as HTTP 429 instead of opaque 502, and clean up detached stateless runs on cancellation.
+- Hold initial native prompt delivery until the current MCP tool inventory is ready, preventing Claude from hallucinating tool calls when the service has not loaded its tools.
+- Reap parked native tool-waiting processes after **five minutes** rather than retaining each for up to 90 minutes; when a legitimate tool result arrives later, resume from that conversation's own native transcript with preserved tool-result structure when safe. The new grace period is a resource policy, not a deadline for client tool execution.
+- Reuse a bounded set of working directories for stateless requests and clear their per-turn session artifacts, improving native prefix cache reuse while avoiding accumulating random Claude projects. **This release does not automatically remove existing ~/.claude.json projects or historical sessions**; such cleanup is a separately backed-up operator action.
+
+Verification includes full Go tests and race/vet in CI, packaged-host tests, synthetic signed-MCP/cancellation tests and byte-identical rebuilds of all eight Runtime/Helper platform binaries. On GTT Canary, a live >5-minute tool result resumed after the parked native child was reclaimed; it read 31,180 cached tokens and wrote 6,480 new tokens. Repeated stateless requests showed cache reuse (e.g. 6,286 cache read and 0 cache write in the reported test). These measured outcomes are workload-dependent.
+
+At the time of release preparation the same `12580da` binary build was deployed to GTT and NTT; checkpoint and authentication files stayed on the machines. **Release publication by itself does not restart VPS services, upgrade a running process, or imply all old dirty conversations recover automatically.** Check the final deployed process SHA-256, and never replay ambiguous historical tools.
+
+## Previous release
+
 # v0.2.11 — stable MCP tool growth across successive handoffs
 
 During a live turn, Claude Desktop can add MCP resource tools after the native run has already started. v0.2.10 accepted the first exact-ID handoff and updated the helper's tool set, but retained the earlier context snapshot; a later handoff in the same turn could then return HTTP 409. v0.2.11 advances the stored context only after the expanded tools have been successfully delivered to the existing native run.

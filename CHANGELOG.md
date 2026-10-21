@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.12 — lightweight TUI and native cache-aware resume (2026-10-22)
+
+- Bounded five-minute parked native tool wait with late-result resume from the original native transcript when available, avoiding unnecessary memory retention.
+- Fixed reusable stateless working directories to improve context cache reuse and prevent abandoned per-request Claude projects.
+- Canonical structured-history recovery, main-turn single-run exclusivity, signed stateless auxiliary routing, HTTP 429 for usage limits, cancelled stateless-run cleanup, MCP readiness barrier and tool-result safety checks.
+- GTT Canary acceptance: late tool callback resumes with original native cache and stateless requests reuse prefix cache; CI checks all compiled artifacts and signed host contracts.
+- Machine-local cleanup of obsolete project directories is deliberately excluded from the installable package.
+
+
 ## 0.2.11 — retain expanded MCP context across live handoffs (2026-10-21)
 
 - After an exact-ID tool continuation successfully adds MCP tools, advance the live run's context snapshot to the accepted tool set so later handoffs in the same turn remain valid.

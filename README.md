@@ -10,7 +10,7 @@
 Persistent sessions, streamed responses and MCP tool handoffs—without modifying Magpie itself.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.8-blue)](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.8)
+[![Release](https://img.shields.io/badge/release-v0.2.12-blue)](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.12)
 [![macOS / Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](COMPATIBILITY.md)
 
 </div>
@@ -55,10 +55,10 @@ Magpie-compatible Agent / SDK client
 
 **Requirements:** Magpie with GitHub plugin support; official Claude Code CLI **2.1.268+**; macOS or Linux (arm64/x64). The login flow can prepare tmux; Bun comes from the Magpie host. Native Windows is not supported. Install on the **machine running Magpie and Claude Code** (including a VPS), not just on a remote client.
 
-**1. Install v0.2.8** ([v0.2.7](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.8)):
+**1. Install v0.2.8** ([v0.2.7](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.12)):
 
 ```sh
-magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.8
+magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.12
 magpie plugin login claude-tui
 ```
 
