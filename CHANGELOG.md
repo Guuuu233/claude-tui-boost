@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.11 — retain expanded MCP context across live handoffs (2026-10-21)
+
+- After an exact-ID tool continuation successfully adds MCP tools, advance the live run's context snapshot to the accepted tool set so later handoffs in the same turn remain valid.
+- Preserve owner/model, existing tool definitions, result ownership, native-process and no-replay checks.
+- Add a regression for the second handoff after dynamic tool growth.
+
 ## 0.2.10 — live handoff representation compatibility (2026-10-21)
 
 - Accept tool ordering, equivalent JSON formatting and ignored billing metadata during verified live handoffs.

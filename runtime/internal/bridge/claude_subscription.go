@@ -4010,10 +4010,17 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			// conversation
 			run, how = nil, runExpired
 		} else if more != nil {
+			// The native continuation has accepted the newly offered tools. Make
+			// that expanded set the run's current context so its next tool result
+			// is compared against what the helper now exposes.
+			contextKey := turnKey(owner, req, nil)
+			contextSnapshot := interactiveContextDiagnosticFromRequest(req)
 			run.mu.Lock()
 			for _, t := range req.Tools {
 				run.tools[t.Name] = true
 			}
+			run.interactiveContextKey = contextKey
+			run.interactiveContextSnapshot = &contextSnapshot
 			run.mu.Unlock()
 		}
 	}
