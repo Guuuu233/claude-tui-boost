@@ -1450,6 +1450,9 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	// without a client session retain their native auto-compaction behavior.
 	env := envWithProxy(claudeProxy(ctx), interactiveClaudeEnv(os.Environ(), outerSession != "" || readOnly))
 	env = append(env, "CLAUDE_BRIDGE_USER_CONTEXT_PATH="+filepath.Join(tmp, "user-context.json"))
+	// The MCP helper marks its first tools/list here; the wrapper holds the
+	// first prompt until then (claudebridge.RunMCP).
+	env = append(env, "CLAUDE_BRIDGE_MCP_LISTED_PATH="+toolsPath+".listed")
 	if nativeLease != nil && os.Getenv("MAGPIE_CLAUDE_NATIVE_TMUX_GUARD") == "1" {
 		// The wrapper fsyncs the marker before creating its tmux session.
 		// Only this canonical run has the native process lease needed to

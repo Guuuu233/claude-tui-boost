@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -267,9 +266,10 @@ func TestLiteNewTurnStopsAParkedRunInsteadOf409(t *testing.T) {
 	onlyRun(t, runs())
 }
 
-// A conversation another request still holds past the wait is answered
-// stateless — never refused, and never touching its checkpoint.
-func TestLiteBusyConversationIsServedStateless(t *testing.T) {
+// A conversation still answering another request past the wait is told to
+// retry: a second native run of one conversation is never started beside
+// the first, and its checkpoint is untouched.
+func TestLiteBusyConversationAsksForRetryAndStartsNothing(t *testing.T) {
 	_, runs := scWrapper(t)
 	rt, b := scRuntime(t)
 	old := liteTurnWait
@@ -281,17 +281,18 @@ func TestLiteBusyConversationIsServedStateless(t *testing.T) {
 		t.Fatal("claim")
 	}
 	defer b.releaseInteractiveOuterTurn(scOwner, scOuter)
-	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,"messages":[
-		{"role":"user","content":"先读一下配置"},{"role":"assistant","content":"配置已读"},{"role":"user","content":"继续"}]}`)
-	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
-		t.Fatalf("busy conversation: %d %s", code, out)
+	rec := httptest.NewRecorder()
+	body := `{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"先读一下配置"},{"role":"assistant","content":"配置已读"},{"role":"user","content":"继续"}]}`
+	code, _ := rt.serveMessages(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), "claude-opus-5-5", scOuter, []byte(body), &Usage{})
+	if code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("busy conversation: %d retry-after=%q", code, rec.Header().Get("Retry-After"))
 	}
-	if run := onlyRun(t, runs()); run["resume"] == "inner-saved" {
-		t.Fatalf("a stateless answer resumed the busy conversation's session: %v", run)
+	if n := len(runs()); n != 0 {
+		t.Fatalf("%d native runs started for a busy conversation", n)
 	}
 	after, _, _ := b.loadInteractiveSession(scOwner, scOuter)
 	if after != before {
-		t.Fatalf("a stateless answer changed the checkpoint: %+v -> %+v", before, after)
+		t.Fatalf("checkpoint changed: %+v -> %+v", before, after)
 	}
 }
 
@@ -366,16 +367,13 @@ func TestLiteOtherThreadOnTheConversationIdRunsStateless(t *testing.T) {
 	}
 }
 
-// A run parked on tool calls the new request does not carry belongs to a
-// conversation turn still in progress (its client is running the tools):
-// the request is answered stateless and the parked run is left alone.
-func TestLiteUnrelatedRequestLeavesAParkedRunAlone(t *testing.T) {
+// The conversation's own next request that does not carry the parked run's
+// tool call (its client never received it: the reply was cut off, and the
+// turn is sent again) stops the parked run; exactly one native run is left.
+func TestLiteRetriedTurnStopsTheParkedRunItNeverSaw(t *testing.T) {
 	dir := olDir(t)
 	olWrapper(t, dir, "lite-park-bridge", olParkScript())
 	rt, b := scRuntime(t)
-	old := liteTurnWait
-	liteTurnWait = 300 * time.Millisecond
-	t.Cleanup(func() { liteTurnWait = old })
 	t.Setenv("DAV1878_PARK_RELEASE", filepath.Join(dir, "never"))
 	first := `{"model":"claude-opus-5-5","max_tokens":64,"tools":[{"name":"write_file","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"把结果写进 notes.txt"}]}`
 	if code, out := scServe(t, rt, scOuter, first); code != 200 || !strings.Contains(out, `"type":"tool_use"`) {
@@ -385,39 +383,21 @@ func TestLiteUnrelatedRequestLeavesAParkedRunAlone(t *testing.T) {
 	if parked == nil {
 		t.Fatal("no parked run")
 	}
-	// Register the live call as the MCP helper would.
-	go func() {
-		w := httptest.NewRecorder()
-		mr := httptest.NewRequest("POST", "/_magpie/claude-mcp/"+parked.token,
-			strings.NewReader(`{"tool_call_id":"call_1","name":"write_file","arguments":{"path":"a"}}`))
-		mr = mr.WithContext(context.WithValue(mr.Context(), mcpTokenKey{}, parked.token))
-		b.mcpCall(w, mr)
-	}()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		parked.mu.Lock()
-		n := len(parked.pending)
-		parked.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the parked call never registered")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	_, runs := scWrapper(t)
-	code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,"messages":[{"role":"user","content":"把结果写进 notes.txt"},{"role":"assistant","content":"x"},{"role":"user","content":"unrelated"}]}`)
+	code, out := scServe(t, rt, scOuter, first)
 	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
-		t.Fatalf("unrelated request: %d %s", code, out)
+		t.Fatalf("retried turn: %d %s", code, out)
 	}
 	parked.mu.Lock()
 	closed := parked.closed
 	parked.mu.Unlock()
-	if closed {
-		t.Fatal("an unrelated request stopped the parked run")
+	if !closed {
+		t.Fatal("the parked run was left alive beside the retried turn")
 	}
 	onlyRun(t, runs())
+	if _, same := olLiveOuterRuns(b, scOuter); same > 1 {
+		t.Fatalf("%d live runs on one conversation", same)
+	}
 }
 
 // Claude Code reports a reached usage limit as a synthetic API error with the

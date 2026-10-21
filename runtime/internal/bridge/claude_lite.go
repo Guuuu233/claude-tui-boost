@@ -25,11 +25,12 @@ import (
 // upstream's routing: they run stateless, beside the conversation's native
 // session and checkpoint. So does a request without a conversation id.
 
-// liteTurnWait bounds how long a request waits for the conversation's
-// previous turn to let go of it (a reply still unwinding after its client
-// left, a parked run being stopped). A conversation still busy after it is
-// served stateless rather than refused.
-var liteTurnWait = 10 * time.Second
+// liteTurnWait bounds how long a conversation's turn waits for its previous
+// turn to let go of it (a reply still unwinding after its client left, a
+// parked run being stopped). A conversation still generating after it is
+// answered 503 with Retry-After: a second native run of one conversation,
+// able to call tools beside the first, is never started.
+var liteTurnWait = 60 * time.Second
 
 // liteContinueText is the turn a rebuilt session is given when the request
 // ends in tool results with nothing else to say.
@@ -77,12 +78,12 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		outerSession = ""
 	}
 	if outerSession != "" {
-		if rt.bridge.takeLiteTurn(r.Context(), owner, outerSession, req) {
-			defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
-		} else {
-			log.Printf("Claude interactive conversation busy with another run: serving this request stateless")
-			outerSession = ""
+		if !rt.bridge.takeLiteTurn(r.Context(), owner, outerSession) {
+			msg := "Claude interactive conversation is still answering another request; retry shortly"
+			w.Header().Set("Retry-After", "5")
+			return writeError(w, protoAnthropic, http.StatusServiceUnavailable, msg), msg
 		}
+		defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
 	}
 	if len(req.Safeguards) > 0 {
 		req.SafeguardBeta = "dangerous-tool-use-2026-09-03"
@@ -183,24 +184,13 @@ func (b *subscriptionBridge) liteCanonical(owner, outerSession, model string, re
 }
 
 // takeLiteTurn makes this request the conversation's only turn. A turn still
-// unwinding is waited out. A run parked on tool calls is stopped when this
-// request carries those calls — the conversation has moved on without their
-// results reaching it — and left alone otherwise. It reports false when the
-// conversation stays busy with another run; the request is then served
-// stateless rather than refused.
-func (b *subscriptionBridge) takeLiteTurn(ctx context.Context, owner, outerSession string, req *Request) bool {
+// unwinding is waited out. A run parked on tool calls is stopped: this is
+// the conversation's own next request (helpers were routed stateless before
+// here), so those calls are either answered in its history — and served
+// from it — or never reached the client. It reports false when another run
+// of the conversation is still generating after liteTurnWait.
+func (b *subscriptionBridge) takeLiteTurn(ctx context.Context, owner, outerSession string) bool {
 	deadline := time.Now().Add(liteTurnWait)
-	wait := func() bool {
-		if time.Now().After(deadline) {
-			return false
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(100 * time.Millisecond):
-			return true
-		}
-	}
 	for {
 		if b.claimInteractiveOuterTurn(owner, outerSession) {
 			old := b.interactiveOuterOwner(owner, outerSession)
@@ -208,40 +198,23 @@ func (b *subscriptionBridge) takeLiteTurn(ctx context.Context, owner, outerSessi
 				return true
 			}
 			old.mu.Lock()
-			done := old.terminalDelivered
-			parked := !old.parkedAt.IsZero()
-			calls := make([]string, 0, len(old.pending))
-			for id := range old.pending {
-				calls = append(calls, id)
-			}
+			idle := old.terminalDelivered || !old.parkedAt.IsZero()
 			old.mu.Unlock()
-			switch {
-			case done:
+			if idle {
+				log.Printf("Claude interactive stopped the conversation's idle or parked run for its next request")
 				old.abort()
-			case parked && (len(calls) == 0 || mentionsCall(req, calls)):
-				log.Printf("Claude interactive stopped a parked run the conversation moved on from")
-				old.abort()
-			case parked:
-				b.releaseInteractiveOuterTurn(owner, outerSession)
-				return false
 			}
 			b.releaseInteractiveOuterTurn(owner, outerSession)
 		}
-		if !wait() {
+		if time.Now().After(deadline) {
 			return false
 		}
-	}
-}
-
-func mentionsCall(req *Request, ids []string) bool {
-	for _, m := range req.Messages {
-		for _, p := range m.Parts {
-			if (p.Kind == ToolCall && slices.Contains(ids, p.ID)) || (p.Kind == ToolResult && slices.Contains(ids, p.CallID)) {
-				return true
-			}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return false
 }
 
 // startLite starts the native run for a turn: the checkpointed session

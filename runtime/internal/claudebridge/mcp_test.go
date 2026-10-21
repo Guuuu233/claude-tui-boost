@@ -86,3 +86,40 @@ func TestNewToolsListedBeforeTheAnswer(t *testing.T) {
 	}
 	inW.Close()
 }
+
+// The wrapper holds the first prompt until Claude Code has its tools: the
+// helper marks its tools/list answer, and only after answering.
+func TestToolsListIsMarkedAfterTheAnswer(t *testing.T) {
+	dir := t.TempDir()
+	toolsPath := filepath.Join(dir, "tools.json")
+	os.WriteFile(toolsPath, []byte(`[{"name":"Read","inputSchema":{"type":"object"}}]`), 0o600)
+	inR, inW, _ := os.Pipe()
+	outR, outW, _ := os.Pipe()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = inR, outW
+	defer func() { os.Stdin, os.Stdout = oldIn, oldOut }()
+	go func() { _ = RunMCP([]string{"http://127.0.0.1:9", toolsPath}); outW.Close() }()
+	sc := bufio.NewScanner(outR)
+	inW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"))
+	if !sc.Scan() {
+		t.Fatal("no initialize answer")
+	}
+	if _, err := os.Stat(toolsPath + ".listed"); err == nil {
+		t.Fatal("marked before any tools/list")
+	}
+	inW.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"))
+	if !sc.Scan() {
+		t.Fatal("no tools/list answer")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(toolsPath + ".listed"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("tools/list was answered but never marked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	inW.Close()
+}

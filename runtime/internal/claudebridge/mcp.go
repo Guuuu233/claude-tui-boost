@@ -192,6 +192,12 @@ func RunMCP(args []string) error {
 				response["result"] = result
 			}
 			respond(response)
+			if req.Method == "tools/list" {
+				// The wrapper submits the first prompt only once Claude Code
+				// has its tools: an earlier prompt runs with none, and the
+				// model writes its tool calls out as text instead.
+				_ = os.WriteFile(toolsPath+".listed", []byte("1\n"), 0o600)
+			}
 		}(req)
 	}
 	return in.Err()
