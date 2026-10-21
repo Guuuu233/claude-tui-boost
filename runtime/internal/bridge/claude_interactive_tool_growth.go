@@ -41,5 +41,5 @@ func (r *subscriptionRun) exactInteractiveToolGrowth(owner string, req *Request,
 	}
 	prior := *req
 	prior.Tools = old
-	return turnKey(owner, &prior, nil) == originalKey
+	return turnKey(owner, &prior, nil) == originalKey || (r.owner == owner && r.interactiveEquivalentContext(&prior))
 }

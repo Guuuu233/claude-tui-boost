@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.10 — live handoff representation compatibility (2026-10-21)
+
+- Accept tool ordering, equivalent JSON formatting and ignored billing metadata during verified live handoffs.
+- Compare Safeguards structurally, retaining effective policy changes and execution ownership checks.
+- Include private boolean context/effort diagnostics and all v0.2.9 fixes.
+
 ## 0.2.9 — recovery and live MCP handoff fixes (2026-10-21)
 
 - Include the GTT orphan read-only recovery baseline and NTT canonical recovery, strict Desktop reminder compatibility, exact live additive tool handoffs, MCP startup readiness and native API error propagation.

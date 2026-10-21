@@ -211,15 +211,16 @@ type subscriptionRun struct {
 	stderr            strings.Builder
 	// Only the opted-in PTY wrapper uses a finite stdin prompt and a
 	// transcript-result stream. It is not an SDK stdin run.
-	interactive           bool
-	interactiveDone       chan struct{}
-	nativeLease           *os.File // held by Runtime and inherited by wrapper; only plugin feature-gated
-	interactiveContextKey string   // the settings/tools of this one PTY turn
-	firstTurnAnchorKey    string   // first user message hash, only for opt-in first-turn durable recovery
-	interactiveUserNonce  string   // pending native post-tool user context
-	interactiveUserAcked  bool     // retained before temporary files are removed
-	outerSession          string   // outer client conversation persisted across PTY turns
-	threadKey             string   // first user words that own outerSession
+	interactive                bool
+	interactiveDone            chan struct{}
+	nativeLease                *os.File                              // held by Runtime and inherited by wrapper; only plugin feature-gated
+	interactiveContextKey      string                                // the settings/tools of this one PTY turn
+	interactiveContextSnapshot *interactiveContextDiagnosticSnapshot // diagnostic-only immutable field digests
+	firstTurnAnchorKey         string                                // first user message hash, only for opt-in first-turn durable recovery
+	interactiveUserNonce       string                                // pending native post-tool user context
+	interactiveUserAcked       bool                                  // retained before temporary files are removed
+	outerSession               string                                // outer client conversation persisted across PTY turns
+	threadKey                  string                                // first user words that own outerSession
 	// readOnlyRecovery marks the explicit opt-in recovery turn: it was
 	// started with no tools at all, so any tool signal — a transcript
 	// tool_use row or an MCP callback — fails the turn instead of running.
@@ -3849,11 +3850,11 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			run.mu.Lock()
 			currentKey, currentEffort := run.interactiveContextKey, run.effort
 			run.mu.Unlock()
-			sameContext := (currentKey == turnKey(owner, req, nil) && currentEffort == req.Effort) ||
+			sameContext := (currentKey == turnKey(owner, req, nil) && currentEffort == req.Effort) || run.interactiveEquivalentContext(req) ||
 				run.exactInteractiveToolGrowth(owner, req, how)
 			if !sameContext {
 				msg := "Claude interactive migration: settings or tool schema changed while a PTY tool was running"
-				log.Print(msg)
+				log.Printf("%s; %s", msg, run.interactiveContextMismatchDiagnostic(req))
 				return writeError(w, from, http.StatusConflict, msg), msg
 			}
 		}
@@ -3878,7 +3879,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		if run.interactive {
 			run.mu.Lock()
 			parked := !run.parkedAt.IsZero()
-			sameSafeguards := bytes.Equal(run.safeguards, req.Safeguards) &&
+			sameSafeguards := interactiveSameSafeguards(run.safeguards, req.Safeguards) &&
 				(len(req.Safeguards) == 0 || run.safeguardBeta == req.SafeguardBeta)
 			run.mu.Unlock()
 			saved, checkpointExists, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
@@ -3964,7 +3965,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			}
 		}
 		if run.interactive {
-			if !bytes.Equal(run.safeguards, req.Safeguards) ||
+			if !interactiveSameSafeguards(run.safeguards, req.Safeguards) ||
 				(len(req.Safeguards) > 0 && run.safeguardBeta != req.SafeguardBeta) {
 				run.abort()
 				msg := "Claude interactive migration: safeguards changed during an in-flight MCP turn"

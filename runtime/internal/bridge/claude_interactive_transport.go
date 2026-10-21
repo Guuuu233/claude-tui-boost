@@ -1461,6 +1461,10 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp,
 		interactive: true, owner: owner, pending: map[string]chan mcpToolResult{},
 		tools: map[string]bool{}, effort: req.Effort, interactiveContextKey: turnKey(owner, req, nil),
+		interactiveContextSnapshot: func() *interactiveContextDiagnosticSnapshot {
+			s := interactiveContextDiagnosticFromRequest(req)
+			return &s
+		}(),
 		outerSession: outerSession, threadKey: firstWords(req), sessionID: resumeID, images: images,
 		searchName: req.SearchTool, schema: len(req.Schema) > 0, readOnlyRecovery: readOnly,
 		safeguards: bytes.Clone(req.Safeguards), safeguardBeta: req.SafeguardBeta}
