@@ -129,10 +129,13 @@ try {
   assert.equal(captures[0].headers["x-bridge-session"], captures[1].headers["x-bridge-session"]);
   assert.notEqual(captures[0].headers["x-bridge-session"], captures[2].headers["x-bridge-session"]);
   assert.equal(captures[2].key, keyB);
-  await assert.rejects(fetch("claude-tui", "magpie-" + "a".repeat(24)));
-  assert.equal(captures.length, 3);
-  await assert.rejects(fetch("claude-tui", ""));
-  assert.equal(captures.length, 3, "missing identity must fail before contacting runtime");
+  await fetch("claude-tui", "magpie-" + "a".repeat(24));
+  await fetch("claude-tui", "");
+  assert.equal(captures.length, 5, "missing or synthetic identity is served stateless");
+  assert.equal(captures[3].headers["x-bridge-session"], "stateless");
+  assert.equal(captures[4].headers["x-bridge-session"], "stateless");
+  assert.equal(captures[3].key, keyA, "stateless request remains authenticated");
+  assert.equal(captures[4].key, keyA, "stateless request remains authenticated");
   const slowBody = JSON.stringify({ model: "runtime-model", messages: [], stream: true, slow: true });
   await assert.rejects(rpc("fetch", {
     provider: "claude-tui", account: "claude-tui", model: "runtime-model", npm: "@ai-sdk/anthropic",
@@ -148,8 +151,8 @@ try {
   let closeTimer;
   try { await Promise.race([closed, new Promise((_, reject) => { closeTimer = setTimeout(() => reject(new Error("runtime did not receive cancellation")), 3000); })]); }
   finally { clearTimeout(closeTimer); }
-  assert.equal(captures.length, 4, "abort must not replay the request");
-  console.log("PASS actual Magpie host: public options, listing, signed fetch, SSE, tool continuation, account separation, identity refusal, cancellation without replay");
+  assert.equal(captures.length, 6, "abort must not replay the request");
+  console.log("PASS actual Magpie host: public options, listing, signed fetch, SSE, tool continuation, account separation, authenticated stateless requests, cancellation without replay");
 } finally {
   child.stdin.end();
   const timer = setTimeout(() => child.kill("SIGKILL"), 2000);

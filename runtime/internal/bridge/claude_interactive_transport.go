@@ -1327,13 +1327,31 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	if err != nil {
 		return nil, nil, err
 	}
-	clean := func() { _ = os.RemoveAll(tmp) }
-	work := tmp
+	release := func() {}
+	clean := func() { _ = os.RemoveAll(tmp); release() }
+	var work string
 	if outerSession != "" {
 		work, err = interactiveSessionWorkDir(owner, outerSession)
-		if err != nil {
-			clean()
-			return nil, nil, err
+	} else {
+		// Claude Code names its cwd in the system prompt: a stateless run in a
+		// folder of its own would write its whole conversation to the cache
+		// again each time. It borrows a fixed one (liteStatelessWorkDir).
+		work, release, err = liteStatelessWorkDir()
+	}
+	if err != nil {
+		clean()
+		return nil, nil, err
+	}
+	if outerSession == "" {
+		// The folder is this run's alone, and nothing resumes a stateless
+		// session: what the last run's Claude Code wrote as it exited goes.
+		for _, dir := range claudeSessions(configDir, work) {
+			entries, _ := os.ReadDir(dir)
+			for _, e := range entries {
+				if sid, ok := strings.CutSuffix(e.Name(), ".jsonl"); ok && !e.IsDir() {
+					removeSession([]string{dir}, sid)
+				}
+			}
 		}
 	}
 	toolsPath := filepath.Join(tmp, "tools.json")
@@ -1354,9 +1372,25 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	if len(req.Schema) > 0 {
 		args = append(args, "--json-schema", string(req.Schema))
 	}
+	// A session rebuilt from the request's own history is new: there is no
+	// earlier native state of it to mark dirty, and it becomes the checkpoint
+	// only by completing.
+	seeded := req.resumedCopy
 	if readOnly && len(req.compactHistory) > 0 {
 		var seedPath string
 		resumeID, seedPath, err = writeCompactionTranscript(work, configDir, req)
+		if err != nil {
+			clean()
+			if seedPath != "" {
+				_ = os.Remove(seedPath)
+			}
+			return nil, nil, err
+		}
+		args = append(args, "--resume", resumeID)
+	} else if len(req.seedHistory) > 0 && resumeID == "" {
+		seeded = true
+		var seedPath string
+		resumeID, seedPath, err = writeClaudeTranscript(work, configDir, model, nil, req.seedHistory, "mcp__magpie__", "")
 		if err != nil {
 			clean()
 			if seedPath != "" {
@@ -1416,7 +1450,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 			releaseInteractiveNativeLease(nativeLease)
 		}
 	}()
-	if resumeID != "" && outerSession != "" {
+	if resumeID != "" && outerSession != "" && !seeded {
 		// Before the resume's first possible side effect, the canonical
 		// checkpoint becomes dirty. In ledger mode the lease above prevents
 		// a second Runtime from dirtying another process's clean result.
@@ -1434,6 +1468,9 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	// without a client session retain their native auto-compaction behavior.
 	env := envWithProxy(claudeProxy(ctx), interactiveClaudeEnv(os.Environ(), outerSession != "" || readOnly))
 	env = append(env, "CLAUDE_BRIDGE_USER_CONTEXT_PATH="+filepath.Join(tmp, "user-context.json"))
+	// The MCP helper marks its first tools/list here; the wrapper holds the
+	// first prompt until then (claudebridge.RunMCP).
+	env = append(env, "CLAUDE_BRIDGE_MCP_LISTED_PATH="+toolsPath+".listed")
 	if nativeLease != nil && os.Getenv("MAGPIE_CLAUDE_NATIVE_TMUX_GUARD") == "1" {
 		// The wrapper fsyncs the marker before creating its tmux session.
 		// Only this canonical run has the native process lease needed to
@@ -1478,6 +1515,16 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	}
 	run.nativeLease = nativeLease
 	leaseTransferred = true // run.finish/removeRun now owns its release
+	if outerSession == "" {
+		// Nothing resumes a stateless run's session: removeRun deletes it and
+		// gives the folder back.
+		dirs, seed := claudeSessions(configDir, work), resumeID
+		run.releaseWork = func(sid string) {
+			removeSession(dirs, seed)
+			removeSession(dirs, sid)
+			release()
+		}
+	}
 	for _, tool := range interactiveTools(req, len(images) > 0) {
 		run.tools[tool.Name] = true
 	}

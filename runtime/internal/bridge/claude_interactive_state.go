@@ -72,7 +72,12 @@ func interactiveSessionWorkDir(owner, outerSession string) (string, error) {
 	// the same concern addressed by #626 for headless subscription runs; the
 	// interactive backend needs a per-conversation directory because --resume
 	// resolves sessions by project/cwd.
-	dir := filepath.Join(os.TempDir(), "magpie-claude-interactive-"+interactiveSessionStateKey(owner, outerSession))
+	return ownedWorkDir(filepath.Join(os.TempDir(), "magpie-claude-interactive-"+interactiveSessionStateKey(owner, outerSession)))
+}
+
+// ownedWorkDir makes dir, a fixed cwd for native runs, and checks this user
+// alone can write it.
+func ownedWorkDir(dir string) (string, error) {
 	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
 		return "", err
 	}

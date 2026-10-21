@@ -125,11 +125,14 @@ printf '%s\\n' '{"type":"result","session_id":"inner-synthetic","stop_reason":"e
     expect(correct.status).toBe(200);
     expect(correct.payload).toContain("SYNTHETIC_MCP_RESUMED_OK");
 
-    // The native run has ended. The same old tool result must not be used as
-    // permission to bootstrap a second process or re-execute a tool.
+    // The native run has ended. A duplicate must never be treated as an
+    // invitation to execute the already completed external tool again.
+    // Lite may answer it via a detached tool-free explanatory request.
     const replay = await send([...messages, {role: "assistant", content: [call]},
       {role: "user", content: [{type: "tool_result", tool_use_id: "fake_call_1", content: "hello"}]}]);
-    expect(replay.status).toBe(409);
+    expect(replay.status).toBe(200);
+    expect(replay.payload).toContain("SYNTHETIC_MCP_RESUMED_OK");
+    expect(replay.payload).not.toContain('"type":"tool_use"');
   } finally {
     if (child && child.exitCode === null) {
       child.kill("SIGTERM");

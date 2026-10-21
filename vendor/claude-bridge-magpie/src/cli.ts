@@ -1136,6 +1136,28 @@ function startupPromptFromPane(
   return null;
 }
 
+// Claude Code shows its input box before its MCP servers have listed their
+// tools. A prompt submitted then runs with no tools at all, and the model
+// writes its tool calls out as text. The Runtime's MCP helper marks its
+// first tools/list; hold the first prompt until then (bounded), plus a
+// moment for Claude Code to register the listing.
+const MCP_LISTED_TIMEOUT_MS = envDurationMs("CLAUDE_BRIDGE_MCP_LISTED_TIMEOUT_MS", 30_000);
+async function waitForMcpListed(): Promise<void> {
+  const listedPath = process.env.CLAUDE_BRIDGE_MCP_LISTED_PATH;
+  if (!listedPath) return;
+  const startedAt = Date.now();
+  while (!existsSync(listedPath)) {
+    if (ctrl.signal.aborted) return;
+    if (Date.now() - startedAt >= MCP_LISTED_TIMEOUT_MS) {
+      desplegaDebug("MCP tools not listed before timeout; submitting anyway", { waitedMs: Date.now() - startedAt });
+      return;
+    }
+    await sleep(100);
+  }
+  await sleep(500);
+  desplegaDebug("MCP tools listed", { waitedMs: Date.now() - startedAt });
+}
+
 async function waitForClaudeReady(): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < CLAUDE_READY_TIMEOUT_MS && !ctrl.signal.aborted) {
@@ -1150,6 +1172,8 @@ async function waitForClaudeReady(): Promise<void> {
       return;
     }
     if (isClaudePaneReady(pane)) {
+      await waitForMcpListed();
+      if (ctrl.signal.aborted) return;
       claudeReady = true;
       desplegaDebug("claude pane ready");
       if (!flushPendingMessages()) promptIfReady();

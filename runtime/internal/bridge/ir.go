@@ -90,18 +90,24 @@ type Tool struct {
 type Request struct {
 	compactHistory []Message
 	compactSystem  string
-	Model          string
-	System         string
-	Messages       []Message
-	Tools          []Tool
-	ToolChoice     string // "" | auto | none | required | name:<tool>
-	MaxTokens      int
-	Temp           *float64
-	TopP           *float64
-	Stop           []string
-	Stream         bool
-	Effort         string // low | medium | high | xhigh | max, when the client asked
-	Thinking       bool   // the client asked for visible reasoning
+	// seedHistory is the conversation a native run resumes from, written as
+	// a Claude Code session before it starts (claude_lite.go).
+	seedHistory []Message
+	// resumedCopy says the session a run resumes is a copy made for this
+	// turn (liteParkedBranch): like a seeded one, no earlier state of it.
+	resumedCopy bool
+	Model       string
+	System      string
+	Messages    []Message
+	Tools       []Tool
+	ToolChoice  string // "" | auto | none | required | name:<tool>
+	MaxTokens   int
+	Temp        *float64
+	TopP        *float64
+	Stop        []string
+	Stream      bool
+	Effort      string // low | medium | high | xhigh | max, when the client asked
+	Thinking    bool   // the client asked for visible reasoning
 	// ThinkOff is the client turning reasoning off: effort "none" (which
 	// Effort reads as low, for vendors with no way to turn it off) or an
 	// Anthropic request with thinking disabled.
