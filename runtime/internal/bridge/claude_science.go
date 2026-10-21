@@ -44,6 +44,11 @@ var scienceTurnWait = 60 * time.Second
 // request ends in tool results with nothing else to say.
 const scienceContinueText = "Continue from the tool results above."
 
+// scienceResultsReceived closes a rebuilt history that ends in tool results.
+// Resuming a session whose last message is the user's, Claude Code answers
+// that message itself ("No response requested.") into the new reply.
+const scienceResultsReceived = "Tool results received."
+
 func (rt *runtimeTUI) serveScience(w http.ResponseWriter, r *http.Request, model, outerSession string, helper bool, body []byte, usage *Usage) (int, string) {
 	owner := "claude-tui\x00default"
 	if helper {
@@ -254,6 +259,9 @@ func scienceSeed(req *Request) (*Request, string, map[string]Part, error) {
 		}
 	}
 	history = pairedToolTraffic(history)
+	if n := len(history); n > 0 && history[n-1].Role != "assistant" {
+		history = append(history, Message{Role: "assistant", Parts: []Part{{Kind: Text, Text: scienceResultsReceived}}})
+	}
 	if !hasUserText(turn) {
 		turn = append(turn, Message{Role: "user", Parts: []Part{{Kind: Text, Text: scienceContinueText}}})
 	}

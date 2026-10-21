@@ -219,6 +219,12 @@ func TestScienceOrphanToolResultRebuildsWithStructuredHistory(t *testing.T) {
 	if !strings.Contains(run["stdin"], scienceContinueText) {
 		t.Fatalf("a results-only turn was not told to continue: %q", run["stdin"])
 	}
+	// The seed must not end on the user's message, or Claude Code answers it
+	// itself ("No response requested.") into the reply.
+	lines := strings.Split(seed, "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, `"type":"assistant"`) || !strings.Contains(last, scienceResultsReceived) {
+		t.Fatalf("seed does not end with an assistant row: %s", last)
+	}
 	if strings.Contains(run["argv"], "python analyze.py") || strings.Contains(run["stdin"], "python analyze.py") {
 		t.Fatalf("the old tool call leaked into the new turn: %v", run)
 	}
