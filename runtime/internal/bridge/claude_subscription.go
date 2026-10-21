@@ -97,7 +97,7 @@ type subscriptionBridge struct {
 	// Last successfully delivered tool-result request per live process. It
 	// prevents an immediate same-payload replay from being rebuilt as a new
 	// turn; process restarts deliberately require separate recovery evidence.
-	liteCompleted map[string]string
+	liteCompleted map[string]liteCompletedTurn
 	// liteParked is each conversation's run last parked on tool calls, by
 	// its state key: once let go, its session is where those calls' results
 	// resume (liteParkedBranch).
@@ -1234,7 +1234,7 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
 				r.mu.Lock()
 				r.terminalDelivered = true
 				r.mu.Unlock()
-				r.bridge.noteLiteCompletedToolTurn(r.owner, outerSession, req)
+				r.bridge.noteLiteCompletedToolTurn(r.owner, outerSession, req, said)
 			}
 		}
 		return

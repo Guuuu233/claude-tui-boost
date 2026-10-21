@@ -497,9 +497,12 @@ func TestLiteAlreadyDeliveredToolResultsNotRebuiltInSameProcess(t *testing.T) {
 	if b.liteToolTurnWasDelivered(scOwner, scOuter, req) {
 		t.Fatal("unseen result must be eligible for first delivery")
 	}
-	b.noteLiteCompletedToolTurn(scOwner, scOuter, req)
+	b.noteLiteCompletedToolTurn(scOwner, scOuter, req, "Original completed answer")
 	if !b.liteToolTurnWasDelivered(scOwner, scOuter, req) {
 		t.Fatal("already delivered result was accepted again")
+	}
+	if completed, ok := b.liteCompletedToolTurn(scOwner, scOuter, req); !ok || completed.reply != "Original completed answer" {
+		t.Fatalf("duplicate must return the original text without a new native run: ok=%v", ok)
 	}
 	next := *req
 	next.Messages = append(append([]Message(nil), req.Messages...), Message{Role: "user", Parts: []Part{{Kind: Text, Text: "continue"}}})

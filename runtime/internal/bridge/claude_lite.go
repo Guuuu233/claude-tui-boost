@@ -71,9 +71,20 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 	// retrying, or its side call on the conversation's identity. It is
 	// answered from its own history, beside the conversation, which keeps
 	// the native session and checkpoint that reply left.
-	if rt.bridge.liteToolTurnWasDelivered(owner, outerSession, req) {
-		log.Printf("Claude interactive tool results already answered on this conversation; serving the repeat stateless")
-		outerSession = ""
+	if completed, ok := rt.bridge.liteCompletedToolTurn(owner, outerSession, req); ok {
+		// The original native run already returned a complete answer.
+		// Return precisely that answer; starting another native inference
+		// could generate the same tool_use a second time.
+		log.Printf("Claude interactive tool results already answered; resending complete text without a new native run")
+		if completed.reply == "" {
+			completed.reply = "The tool result was already processed. Send a new user message to continue."
+		}
+		events := make(chan Event, 3)
+		events <- Event{Kind: KStart, Model: model, ID: "msg_" + newID()}
+		events <- Event{Kind: KText, Text: completed.reply}
+		events <- Event{Kind: KStop, Stop: "stop"}
+		close(events)
+		return relay(w, r, protoAnthropic, "Claude Code", req, events, usage, func() {}, func(string, string, bool) {})
 	}
 	upstream := func() (int, string) {
 		start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
@@ -168,7 +179,12 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 	})
 }
 
-func (b *subscriptionBridge) noteLiteCompletedToolTurn(owner, outerSession string, req *Request) {
+type liteCompletedTurn struct {
+	hash  string
+	reply string
+}
+
+func (b *subscriptionBridge) noteLiteCompletedToolTurn(owner, outerSession string, req *Request, reply ...string) {
 	if b == nil || outerSession == "" || req == nil || !interactiveToolContinuation(req) {
 		return
 	}
@@ -176,20 +192,29 @@ func (b *subscriptionBridge) noteLiteCompletedToolTurn(owner, outerSession strin
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.liteCompleted == nil || len(b.liteCompleted) >= 1024 {
-		b.liteCompleted = make(map[string]string)
+		b.liteCompleted = make(map[string]liteCompletedTurn)
 	}
-	b.liteCompleted[key] = historyKey(req.Messages)
+	var answered string
+	if len(reply) != 0 {
+		answered = reply[0]
+	}
+	b.liteCompleted[key] = liteCompletedTurn{hash: historyKey(req.Messages), reply: answered}
 }
 
 func (b *subscriptionBridge) liteToolTurnWasDelivered(owner, outerSession string, req *Request) bool {
+	_, ok := b.liteCompletedToolTurn(owner, outerSession, req)
+	return ok
+}
+
+func (b *subscriptionBridge) liteCompletedToolTurn(owner, outerSession string, req *Request) (liteCompletedTurn, bool) {
 	if b == nil || outerSession == "" || req == nil || !interactiveToolContinuation(req) {
-		return false
+		return liteCompletedTurn{}, false
 	}
 	key := interactiveSessionStateKey(owner, outerSession)
 	b.mu.Lock()
 	prior := b.liteCompleted[key]
 	b.mu.Unlock()
-	return prior != "" && prior == historyKey(req.Messages)
+	return prior, prior.hash != "" && prior.hash == historyKey(req.Messages)
 }
 
 func liteVisibleToolHandoff(req *Request) error {
