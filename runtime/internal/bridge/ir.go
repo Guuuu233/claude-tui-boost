@@ -93,6 +93,9 @@ type Request struct {
 	// seedHistory is the conversation a native run resumes from, written as
 	// a Claude Code session before it starts (claude_lite.go).
 	seedHistory []Message
+	// replayKey is the request as it arrived (liteReplayKey), kept before
+	// serveLite adds its own tools so the reply is recorded under it too.
+	replayKey string
 	// resumedCopy says the session a run resumes is a copy made for this
 	// turn (liteParkedBranch): like a seeded one, no earlier state of it.
 	resumedCopy bool
