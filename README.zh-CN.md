@@ -55,12 +55,14 @@
 
 **环境要求：** 支持 GitHub 插件安装的 Magpie、官方 Claude Code CLI **2.1.268 或更新版本**，系统为 macOS / Linux（arm64、x64）。连接向导可以准备 tmux，Bun 由 Magpie 宿主提供；暂不支持原生 Windows。**插件和 Claude Code 必须安装在运行 Magpie 的同一台主机**，VPS 用户应在 VPS 上操作。
 
-**第 1 步：安装 v0.2.13 正式版**（[v0.2.13](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)）。
+**第 1 步：安装**（当前正式版 [v0.2.13](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)）。
 
 ```sh
-magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.13
+magpie plugin add github:Guuuu233/claude-tui-boost
 magpie plugin login claude-tui
 ```
+
+主分支始终保持为最新正式版，有新版本时 Magpie 的 **插件** 页会提示更新（也可运行 `magpie plugin update`）。不要加 `#标签`：标签不会移动，Magpie 就永远不会提示更新。更新会重启插件宿主，托管 runtime 随之重启，请在任务间隙更新。以前用 `#v0.2.x` 安装的，运行一次上面的命令即可切换。
 
 **第 2 步：连接 Claude。** 在 Magpie 的 **Claude TUI** 供应商页面选择「**自动安装并登录 Claude**」，按提示通过官方浏览器页面完成授权。向导会创建独立 Claude 配置目录；已有专用登录目录也可选择高级连接方式。
 

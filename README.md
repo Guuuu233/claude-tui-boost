@@ -55,12 +55,14 @@ Magpie-compatible Agent / SDK client
 
 **Requirements:** Magpie with GitHub plugin support; official Claude Code CLI **2.1.268+**; macOS or Linux (arm64/x64). The login flow can prepare tmux; Bun comes from the Magpie host. Native Windows is not supported. Install on the **machine running Magpie and Claude Code** (including a VPS), not just on a remote client.
 
-**1. Install v0.2.13** ([v0.2.13](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)):
+**1. Install** (current release: [v0.2.13](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)):
 
 ```sh
-magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.13
+magpie plugin add github:Guuuu233/claude-tui-boost
 magpie plugin login claude-tui
 ```
+
+The main branch is kept at the latest published release, so Magpie shows an update in **Plugins** whenever a new one is out (or run `magpie plugin update`). Leave out a `#tag`: a tag never moves and Magpie would never offer an update. Updating restarts the plugin host, which restarts the managed runtime, so update between tasks. Installed earlier with `#v0.2.x`? Run the command above once to switch.
 
 **2. Connect Claude.** In Magpie, open the **Claude TUI** provider and choose **Auto install & sign in to Claude** (shown in Chinese as “自动安装并登录 Claude”). Complete the official Claude browser login when prompted. A dedicated Claude profile is created; the advanced “Connect already signed-in Claude” option is also available.
 
