@@ -1,3 +1,15 @@
+# v0.2.13 — completed tool replies are replayed only for the very same request
+
+v0.2.12 answers a repeated delivery of tool results whose reply was already delivered from that stored reply, without starting another native run. It recognised the repeat by the message history alone, so a request with the same history but a different system prompt, tool set, tool schema, model or generation settings could be answered with a reply meant for another request.
+
+- The stored reply is now keyed by a SHA-256 fingerprint of the whole request as the client sent it: account, model, system prompt, tools, messages, tool_choice, thinking and effort, output schema, max_tokens, temperature, top_p, stop sequences, parallel-tool and priority settings. Any difference starts a normal native run.
+- Client metadata (such as Claude Code's user_id) is left out, and the fingerprint is taken before Magpie adds its own web-search tool, so a client's true retries — including concurrent ones — are still replayed with no new native run.
+- No other behaviour changes; all v0.2.12 protections remain.
+
+Verification: full Go tests and vet, new unit and end-to-end tests for every fingerprint dimension, concurrent retries and searching requests (they fail on v0.2.12 and pass here; two mutations of the fix are caught), and byte-identical rebuilds of all eight Runtime/Helper binaries checked by `scripts/verify-source-binaries.sh`. **Release publication by itself does not restart VPS services or upgrade a running process.**
+
+## Previous release
+
 # v0.2.12 — lightweight sessions, bounded tool parking, and cache-friendly resume
 
 This release promotes the `tui-lite` Runtime and signed Magpie plugin together, including the fixes validated on GTT/NTT production under the same Runtime SHA-256. It builds on all v0.2.11 MCP context and security protections.

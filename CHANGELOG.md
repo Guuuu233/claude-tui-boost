@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.13 — replay a completed tool reply only for the very same request (2026-10-22)
+
+- A repeated tool-result delivery whose reply was already delivered is answered from that reply only when the whole request matches: account, model, system prompt, tools and their schemas, messages, tool_choice, thinking/effort, output schema, max_tokens, temperature, top_p and stop sequences. v0.2.12 compared the messages alone, so the same history under another system prompt, tool set or settings could get the old answer.
+- Client metadata is not part of the match, and Magpie's own added web-search tool is excluded, so true retries are still replayed without starting another native run.
+
 ## 0.2.12 — lightweight TUI and native cache-aware resume (2026-10-22)
 
 - Bounded five-minute parked native tool wait with late-result resume from the original native transcript when available, avoiding unnecessary memory retention.

@@ -10,7 +10,7 @@
 持续会话、流式响应、MCP 工具往返——无需修改 Magpie 本体。
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.12-blue)](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.12)
+[![Release](https://img.shields.io/badge/release-v0.2.13-blue)](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)
 [![macOS / Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](COMPATIBILITY.md)
 
 </div>
@@ -32,7 +32,7 @@
 
 - **多轮连续会话**：让同一 Agent 会话尽量沿用 Claude Code 原生会话，减少反复启动和上下文重建。
 - **真正的 Agent 工具交互**：支持流式输出、并行 MCP 工具调用与结果续接、取消和受约束的中断恢复。
-- **查看订阅额度**：当前 v0.2.12 正式版默认通过对应账号的原生 Claude Code `/usage` 读取 5 小时与 7 天用量。
+- **查看订阅额度**：当前 v0.2.13 正式版默认通过对应账号的原生 Claude Code `/usage` 读取 5 小时与 7 天用量。
 - **独立插件安装**：自带 Go Runtime、MCP Helper 与 tmux Wrapper，不需要给 Magpie 本体打补丁。
 
 ```text
@@ -55,10 +55,10 @@
 
 **环境要求：** 支持 GitHub 插件安装的 Magpie、官方 Claude Code CLI **2.1.268 或更新版本**，系统为 macOS / Linux（arm64、x64）。连接向导可以准备 tmux，Bun 由 Magpie 宿主提供；暂不支持原生 Windows。**插件和 Claude Code 必须安装在运行 Magpie 的同一台主机**，VPS 用户应在 VPS 上操作。
 
-**第 1 步：安装 v0.2.12 正式版**（[v0.2.7](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.12)）。
+**第 1 步：安装 v0.2.13 正式版**（[v0.2.13](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)）。
 
 ```sh
-magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.12
+magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.13
 magpie plugin login claude-tui
 ```
 
@@ -80,7 +80,7 @@ magpie plugin login claude-tui
 | [完整技术说明](TECHNICAL_REFERENCE.md) | 高级参数、权限影响、测试和源码构建 |
 | [版本说明](RELEASE_NOTES.md) · [更新记录](CHANGELOG.md) | 已实现改进、已知限制和后续维护 |
 
-**当前稳定版：** `v0.2.12` 增加五分钟工具等待进程回收、晚到结果原生续接及无状态缓存优化；复杂长会话与工具重放边界仍属实验性能力，详见[发布说明](RELEASE_NOTES.md)。
+**当前稳定版：** `v0.2.13` 在 v0.2.12 基础上收紧已完成工具回复的回放：只有完全相同的请求才会拿到旧回复；复杂长会话与工具重放边界仍属实验性能力，详见[发布说明](RELEASE_NOTES.md)。
 
 ## 参与贡献
 
