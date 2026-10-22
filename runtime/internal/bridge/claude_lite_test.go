@@ -418,6 +418,15 @@ func TestLiteUsageLimitIs429(t *testing.T) {
 			t.Fatalf("stream=%s: usage limit answered %d %s", stream, code, out)
 		}
 	}
+	// The wrapper's own result for a StopFailure rate_limit, as GTT got it:
+	// no status, no text, the reason in `error` above the pane's tail.
+	os.WriteFile(p, []byte("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"api_error_status\":null,\"result\":null,\"error\":\"Claude StopFailure hook fired: rate_limit\\nPane tail:\\nPRIVATE_PANE\",\"session_id\":\"s\"}'\n"), 0o700)
+	for _, stream := range []string{"true", "false"} {
+		code, out := scServe(t, rt, scOuter, `{"model":"claude-opus-5-5","max_tokens":64,"stream":`+stream+`,"messages":[{"role":"user","content":"hi"}]}`)
+		if code != http.StatusTooManyRequests || strings.Contains(out, "PRIVATE_PANE") {
+			t.Fatalf("stream=%s: StopFailure rate limit answered %d %s", stream, code, out)
+		}
+	}
 	if liteStatus(http.StatusBadGateway, "prompt is too long: exceeded context") != http.StatusBadGateway {
 		t.Fatal("a context overflow was taken for a usage limit")
 	}

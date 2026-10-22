@@ -1,6 +1,6 @@
 {
   "name": "magpie-claude-tui-plugin",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Claude TUI Boost：通过真实 Claude Code 交互式 TUI 接入 Magpie/OpenCode，单组 Opus 5.5 对照测得约 1.8～2 倍额度使用效率。",
   "type": "module",
   "main": "./index.mjs",

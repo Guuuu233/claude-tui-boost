@@ -65,11 +65,18 @@ func nativeErrorResultText(result string, status int, raw json.RawMessage) strin
 	if result != "" {
 		return result
 	}
-	if status < 400 {
-		return ""
-	}
 	var detail string
 	if err := json.Unmarshal(raw, &detail); err != nil {
+		return ""
+	}
+	if status < 400 {
+		// Unverified, and it carries the pane's tail: nothing of it goes on,
+		// except that its own first line says a limit was hit (a StopFailure
+		// rate_limit), so the client hears 429 and waits.
+		first, _, _ := strings.Cut(detail, "\n")
+		if limitWords.MatchString(first) {
+			return "Claude Code reached its usage or rate limit"
+		}
 		return ""
 	}
 	return strings.TrimSpace(detail)

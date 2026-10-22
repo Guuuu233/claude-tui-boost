@@ -14,10 +14,10 @@ This document preserves the previous full-length README for operators who need c
 
 **工作流：** `兼容 Magpie 的 Agent / SDK 客户端 → Magpie 网关 → Claude TUI 插件 + Go Runtime → 原生交互式 Claude Code`。完整 SDK 接入仍取决于客户端协议适配；不保证所有 SDK 即插即用。
 
-**快速尝试 / Quick start**（[v0.2.7-rc.4 预发布版](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.7-rc.4)，需要自行检查账户条款和风险）：
+**快速尝试 / Quick start**（跟随主分支的正式版，[Releases](https://github.com/Guuuu233/claude-tui-boost/releases)，需要自行检查账户条款和风险）：
 
 ```sh
-magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.7-rc.4
+magpie plugin add github:Guuuu233/claude-tui-boost
 magpie plugin login claude-tui
 ```
 
@@ -89,7 +89,7 @@ Magpie / OpenCode / 接入 Magpie 网关的客户端
 前提：支持 GitHub 插件安装的 Magpie、macOS/Linux（arm64 或 amd64）、官方 Claude Code CLI **2.1.268 或更新版本**、可运行 Bun/tmux 的环境。**原生 Windows 未支持**。
 
 ```sh
-magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.7-rc.4
+magpie plugin add github:Guuuu233/claude-tui-boost
 magpie plugin login claude-tui
 ```
 
@@ -141,7 +141,7 @@ This provider uses a locally installed, already signed-in Claude Code **interact
 
 Requirements: Magpie with GitHub plugin installation support, official Claude Code **v2.1.268 or newer** installed, and macOS or Linux (arm64 / x86_64). Bun is supplied by the Magpie plugin host. The automatic connection flow prepares tmux and a dedicated Claude profile; native Windows is unsupported. The plugin/runtime and Claude Code must run on the same machine; installing on a Mac does not update a VPS.
 ```sh
-magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.7-rc.4
+magpie plugin add github:Guuuu233/claude-tui-boost
 magpie plugin login claude-tui
 ```
 

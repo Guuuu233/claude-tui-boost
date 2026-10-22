@@ -3,6 +3,8 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,9 +70,9 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		return writeError(w, protoAnthropic, http.StatusConflict, msg), msg
 	}
 	// The same tool results again, after their reply was delivered: a client
-	// retrying, or its side call on the conversation's identity. It is
-	// answered from its own history, beside the conversation, which keeps
-	// the native session and checkpoint that reply left.
+	// retrying. Only the very same request gets that reply again; the same
+	// history asked under another system prompt, tools or settings is run.
+	req.replayKey = liteReplayKey(owner, req)
 	if completed, ok := rt.bridge.liteCompletedToolTurn(owner, outerSession, req); ok {
 		// The original native run already returned a complete answer.
 		// Return precisely that answer; starting another native inference
@@ -180,8 +182,22 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 }
 
 type liteCompletedTurn struct {
-	hash  string
+	key   string
 	reply string
+}
+
+// liteReplayKey is the whole request a completed reply answered: turnKey's
+// account, model, system prompt, tools and messages, with the generation
+// settings turnKey leaves out. The client's metadata is not in it.
+func liteReplayKey(owner string, req *Request) string {
+	if req.replayKey != "" {
+		return req.replayKey
+	}
+	h := sha256.New()
+	stop, _ := json.Marshal(req.Stop)
+	settings, _ := json.Marshal([]any{req.MaxTokens, req.Temp, req.TopP, req.Effort, req.Thinking, req.Parallel, req.Fast})
+	fmt.Fprintf(h, "%s\x00%s\x00%s", turnKey(owner, req, req.Messages), stop, settings)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (b *subscriptionBridge) noteLiteCompletedToolTurn(owner, outerSession string, req *Request, reply ...string) {
@@ -198,7 +214,7 @@ func (b *subscriptionBridge) noteLiteCompletedToolTurn(owner, outerSession strin
 	if len(reply) != 0 {
 		answered = reply[0]
 	}
-	b.liteCompleted[key] = liteCompletedTurn{hash: historyKey(req.Messages), reply: answered}
+	b.liteCompleted[key] = liteCompletedTurn{key: liteReplayKey(owner, req), reply: answered}
 }
 
 func (b *subscriptionBridge) liteToolTurnWasDelivered(owner, outerSession string, req *Request) bool {
@@ -214,7 +230,7 @@ func (b *subscriptionBridge) liteCompletedToolTurn(owner, outerSession string, r
 	b.mu.Lock()
 	prior := b.liteCompleted[key]
 	b.mu.Unlock()
-	return prior, prior.hash != "" && prior.hash == historyKey(req.Messages)
+	return prior, prior.key != "" && prior.key == liteReplayKey(owner, req)
 }
 
 func liteVisibleToolHandoff(req *Request) error {
