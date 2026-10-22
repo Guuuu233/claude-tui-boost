@@ -10,7 +10,7 @@
 Persistent sessions, streamed responses and MCP tool handoffs—without modifying Magpie itself.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.13-blue)](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)
+[![Release](https://img.shields.io/github/v/release/Guuuu233/claude-tui-boost)](https://github.com/Guuuu233/claude-tui-boost/releases/latest)
 [![macOS / Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](COMPATIBILITY.md)
 
 </div>
@@ -32,7 +32,7 @@ The difference was observed for a specific workload, not across all models or ac
 
 - **Continue across turns:** Reuse an interactive Claude session instead of treating every gateway turn as a fresh conversation.
 - **Keep the tools working:** Stream responses and hand off concurrent MCP tool calls/results to your Agent; handle cancellation and bounded recovery.
-- **See your Claude usage:** The v0.2.7 release reads 5-hour / 7-day usage via the selected profile's native Claude Code `/usage` command.
+- **See your Claude usage:** Reads 5-hour / 7-day usage through the selected profile's native Claude Code `/usage` command.
 - **Install as a plugin:** The bundled Go Runtime, MCP helper and tmux wrapper run alongside Magpie. No Magpie source patch is required.
 
 ```text
@@ -82,7 +82,7 @@ The main branch is kept at the latest published release, so Magpie shows an upda
 | [Technical reference](TECHNICAL_REFERENCE.md) | Advanced configuration, exact security effects, tests and builds |
 | [Release notes](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md) | What's new and what remains experimental |
 
-**Current release:** `v0.2.8` includes native-session continuity and checkpoint safety updates following `v0.2.7`. Complex long-lived Desktop recovery is still experimental; see [release notes](RELEASE_NOTES.md).
+**Current release:** `v0.2.13` replays a completed tool reply only for the very same request and answers an exhausted Claude allowance with 429 instead of 502. Since `v0.2.12` each conversation is served from its own history: an interrupted or rewritten conversation is rebuilt rather than refused. Tool-replay boundaries in long, complex sessions remain experimental; see [release notes](RELEASE_NOTES.md).
 
 ## Contribute
 

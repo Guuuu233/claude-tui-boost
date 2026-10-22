@@ -6,14 +6,14 @@ See [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md) for the current Magpie host b
 
 | Runtime platform | Evidence |
 | --- | --- |
-| Linux x86_64 | Existing VPS deployment and earlier isolated/real Claude runtime checks; latest automatic/SSH login is tested with fake Claude and real tmux, not real new-user OAuth. |
+| Linux x86_64 | v0.2.12 runs in production on two VPS hosts; v0.2.13 passed a Canary with real Claude model calls. Automatic/SSH login is tested with fake Claude and real tmux, not real new-user OAuth. |
 | macOS arm64 | Native build host; isolated plugin/host/runtime/login tests. Current Mac Magpie installation, real OAuth and GUI installation have not been changed or retested. |
 | Linux arm64; macOS amd64 | Cross-compiled binaries; no native execution acceptance on these architectures. |
 | Native Windows / WSL | Unsupported by this distribution's interactive runtime. A Windows client may connect to Magpie running this plugin on a supported VPS. No Windows launcher is included. |
 
 The runtime/helper binaries for all four macOS/Linux combinations ship in `bin/`. Bun is required for the plugin and vendored TypeScript wrapper, tmux for the native interactive session, and an already installed official Claude Code CLI for login. The automatic connection action prepares tmux and, on macOS when required, Homebrew. Bun suffices for the `.mjs` helpers; a separate Node installation is not required. Automatic subscription status verification requires Claude CLI 2.1.268 or newer and an exact dedicated config-directory match.
 
-Go is required only for rebuilding. Release CI uses Go 1.27.1, `CGO_ENABLED=0` and `-trimpath`; install machines need no Go compiler. Cross-host byte-identical builds are not established. Use release checksums for artifact integrity; see README for the known local/Ubuntu build-hash difference.
+Go is required only for rebuilding. Release CI uses Go 1.27.1, `CGO_ENABLED=0` and `-trimpath`; install machines need no Go compiler. The release workflow rebuilds all eight binaries on Ubuntu and requires them to match the committed ones byte for byte; release checksums cover artifact integrity.
 
 ## Runtime scope
 
