@@ -1,9 +1,10 @@
 # Changelog
 
-## 0.2.13 — replay a completed tool reply only for the very same request (2026-10-22)
+## 0.2.13 — exact-request tool replay; usage limits answered as 429 (2026-10-22)
 
 - A repeated tool-result delivery whose reply was already delivered is answered from that reply only when the whole request matches: account, model, system prompt, tools and their schemas, messages, tool_choice, thinking/effort, output schema, max_tokens, temperature, top_p and stop sequences. v0.2.12 compared the messages alone, so the same history under another system prompt, tool set or settings could get the old answer.
 - Client metadata is not part of the match, and Magpie's own added web-search tool is excluded, so true retries are still replayed without starting another native run.
+- A native turn that ends in a Claude Code StopFailure rate_limit (an exhausted 5-hour or weekly allowance) is now answered with HTTP 429 instead of a generic 502, so clients wait rather than retry at once. The wrapper's unverified diagnostic and its terminal pane tail are still never forwarded.
 
 ## 0.2.12 — lightweight TUI and native cache-aware resume (2026-10-22)
 
