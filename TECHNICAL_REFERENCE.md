@@ -27,13 +27,11 @@ magpie plugin login claude-tui
 
 ## 中文使用说明
 
-### v0.2.7-rc.4 独立插件预发布版
+### 外部 systemd 管理的 Runtime
 
 外部 systemd 管理 Runtime 时，推荐在插件 `options` 中保留 `runtimeURL`，同时添加 `runtimePortFile`，例如 `"runtimePortFile": "/home/magpie/.config/magpie-tui-runtime-production/port"`。插件会在每次请求时读取仅服务用户可访问的端口文件，从而在 Runtime 重启改变端口后自动恢复，避免网关静态 URL 漂移导致的 502。该选项只允许本机回环端口，不允许指向其他主机；托管模式无需配置它。
 
-当前候选将近期审计修复直接纳入**本插件及随包的 Go Runtime**，无需编辑或重新编译 Magpie 本体。包含客户端断线时保留原工具回调、跨请求取消隔离、默认由原生 Claude Code `/usage` 读取额度，以及随包提供的只读预检命令 `magpie-tui-doctor`。该版本尚未在真实 Claude Desktop 长会话上做生产验收，不应无条件替换正在工作的生产版本。
-
-有显式外部 Runtime 配置的服务可在升级前运行：
+所有修复都在**本插件及随包的 Go Runtime**中，无需编辑或重新编译 Magpie 本体。外部 Runtime 不随 Magpie 插件更新自动升级：新版本发布后需要在该主机替换 Runtime 二进制并在空闲时重启服务。有显式外部 Runtime 配置的服务可在升级前运行随包的只读预检命令：
 
 ```sh
 magpie-tui-doctor --plugins /path/to/plugins.json --runtime-dir /path/to/runtime-state --service-uid 1001
@@ -41,7 +39,7 @@ magpie-tui-doctor --plugins /path/to/plugins.json --runtime-dir /path/to/runtime
 
 其中 UID 应替换为实际运行 Magpie 的账号 UID。命令只检查本地配置和状态文件元数据，重点拦截重复启用的 `claude-tui` 插件、旧端口、错误文件所有者或权限；不会联网、修改配置或读取 OAuth。**托管模式使用自己的账号级运行时启动/就绪验证，外部 Runtime 预检命令不能代替该过程。**
 
-在 Magpie v0.1.1268 中，宿主可能让两个同名插件的请求头相互覆盖；此问题不能由第三方插件完整消除。候选采用“只允许单一启用实例 + 错误签名直接拒绝”的安全策略，不包含任何 Magpie 核心补丁。当前候选的源码、测试与发布说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+自 Magpie v0.1.1268 起，宿主可能让两个同名插件的请求头相互覆盖；此问题不能由第三方插件完整消除。插件采用“只允许单一启用实例 + 错误签名直接拒绝”的安全策略，不包含任何 Magpie 核心补丁。各版本的改动与验证见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
 ### 为什么 CLI 与 SDK 用户关心它？
 
@@ -101,21 +99,19 @@ magpie plugin login claude-tui
 
 **安全优先原则：外部 `Edit`、`Write`、`Bash` 可能已经执行，却未把结果成功回传。收到 409/502 后不要无条件重试同一工具，也不要直接删除 checkpoint 或重放原始命令。**
 
-- MCP 工具长任务：生成的插件 MCP 服务调用上限为 30 分钟；交互式回调等待最长 90 分钟、原生运行计时器 12 小时；一次性调用原有的 5 分钟等待规则不变。**这些不是保证任务必定完成的 SLA**。
+- **v0.2.12 起按请求自带的历史服务每个对话：** 能接上正在运行或停放的原生会话就继续；接不上（中断、客户端改写或压缩、重启、停放超时被回收）时，历史能接上该对话自己的原生 transcript 就续接，否则按请求里的结构化历史重建原生会话，不再因对不上 checkpoint 而拒绝。工具结果与请求中最后一轮可见工具调用的 ID 不符仍返回 409；同一对话已有一轮在运行时，新请求最多等 60 秒，然后返回 503（`Retry-After: 5`）；没有稳定会话 ID 的请求（标题、分类、辅助调用）走无状态运行。v0.2.13 起，已交付回复的工具结果被原样重发时，只有整个请求完全相同才直接返回原回复；Claude 额度用尽返回 429。详见 [RECOVERY.md](RECOVERY.md)。
+- MCP 工具长任务：生成的插件 MCP 服务调用上限为 30 分钟；等待工具结果的原生进程停放 5 分钟后回收（v0.2.12），结果晚到时从该对话自己的原生 transcript 续接；原生运行计时器 12 小时。**这些不是保证任务必定完成的 SLA**。
 - 动态历史内容：在 `main` 当前源码中，只有**严格匹配**的 token 余额提示可以在旧用户消息的独立文本块被删除时忽略；其他用户指令、工具参数和普通提醒依然严格校验。
 - 受控只读恢复（v0.2.3）：`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1` **默认关闭**。只有活跃的原始工具回调、完全匹配的会话与模型、安全设置、已标记 Dirty 的持久化 checkpoint 等条件全部满足，才允许终止失配进程并启动一次**禁用工具的只读恢复轮次**。不会重新执行已经完成的修改，也不能复活此前已死亡的 MCP 回调。
 - Claude Desktop `/compact`（v0.2.4）：识别专用压缩请求，将用户/助手消息及历史工具调用、结果和图片写入独立 Claude Code CLI 会话；系统提示作为标注过的历史背景。摘要轮禁用工具，历史工具不会重新执行，原会话 checkpoint 不会被替换。摘要内容会经过已配置的 Claude Code 登录路径；隔离 transcript 会额外保存在该 Claude profile 的会话目录中，遵循 CLI 的会话保留行为。
-- Claude 额度卡（v0.2.7-rc.4）：默认由所选 profile 对应的**原生 Claude Code CLI** 使用无工具、无会话持久化的独立 `claude -p /usage` 查询，不因发现 `.credentials.json` 中的 OAuth access token 而自行直连额度接口。旧的 HTTPS 额度读取仅在明确配置 `usageMode: "direct"` 时启用，两条路径有相互隔离的 60 秒缓存。额度读取失败返回错误，不伪造 0%；不会在失败时自动切换为直接 OAuth。托管账号始终按各自 profile 查询。
+- Claude 额度卡（v0.2.7 起）：默认由所选 profile 对应的**原生 Claude Code CLI** 使用无工具、无会话持久化的独立 `claude -p /usage` 查询，不因发现 `.credentials.json` 中的 OAuth access token 而自行直连额度接口。旧的 HTTPS 额度读取仅在明确配置 `usageMode: "direct"` 时启用，两条路径有相互隔离的 60 秒缓存。额度读取失败返回错误，不伪造 0%；不会在失败时自动切换为直接 OAuth。托管账号始终按各自 profile 查询。
 - 旧会话的定向迁移需要私有证书与人工核查，不会作为普通插件安装功能开放。更完整的机制、其他开关、限制及拒绝场景见 [RECOVERY.md](RECOVERY.md)。
 
 **托管安装配置**：六个经过明确允许的恢复环境变量只能取 `0` 或 `1`，且要在**Magpie 宿主服务启动环境**中设置，再在空闲时重新加载插件。仅在本机 Desktop 或终端设置变量，不能改变另一台 VPS 上的 Magpie 进程。不要为了追求“无感恢复”而一次性启用全部开关。生产环境是否启用，以及测试通过与否，不能从 GitHub 源码默认值直接推断。
 
 ### 版本、更新与兼容性
 
-- **v0.2.7-rc.4 已作为 GitHub Pre-release 发布**，建议固定对应标签或安装经过验证的 `.tgz` 包。它不是 `v0.2.7` 稳定版；GitHub 发布不会自动升级 VPS 或现有 Magpie，请勿在工具执行过程中强制切换。
-
-- **v0.2.6 修正 Claude TUI 额度读取**，优先读取账号实际的 5 小时与 7 天额度窗口，并保留无文件凭据 profile 的本机 CLI 回退。发布 GitHub 版本不会自动升级 VPS 上已安装的副本；需要在运行 Magpie 的主机更新插件，再刷新额度页。
-- **v0.2.4 修复 Claude Desktop `/compact` 将已结束的历史工具误当作待接续调用的问题**。在 Magpie 中更新插件，或明确安装 `magpie plugin add github:Guuuu233/claude-tui-boost#v0.2.4`。其他 409/502 仍需按实际错误排查；固定旧版本的安装不会自动获得此修复。升级前应结束正在执行的工具、保留旧状态及回滚途径。
+- **安装与更新：** 用不带标签的 `github:Guuuu233/claude-tui-boost` 安装。主分支始终保持为最新正式版，有新版本时 Magpie 插件页会提示更新；带 `#标签` 或固定 commit 的安装永远不会提示更新。更新会重启插件宿主及其托管的 Runtime，请在没有工具执行时更新。GitHub 发布不会升级 systemd 等外部管理的 Runtime，需要在对应主机单独替换。各版本改动见 [RELEASE_NOTES.md](RELEASE_NOTES.md) 与 [CHANGELOG.md](CHANGELOG.md)。
 - 插件携带自己的 Runtime、Helper 和 Wrapper；升级 Magpie **不会自动替换这些文件**，却可能修改插件加载、模型 API 转换、会话标识、流式请求与登录流程，因此**不能承诺对所有未来 Magpie/Claude Code 版本兼容**。有按已验证版本、最新发布版、上游 `main` 执行的兼容检查，详见 [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md)。
 - 支持 macOS 与 Linux 的四种 CPU/OS 组合发布构建；交叉编译通过**不代表**四种平台全部经历真实 OAuth 与 GUI 测试。用户数据目录、订阅额度、历史会话和私人恢复凭证不会随 GitHub 安装包分发。
 
@@ -145,7 +141,7 @@ magpie plugin add github:Guuuu233/claude-tui-boost
 magpie plugin login claude-tui
 ```
 
-Alternatively, find **magpie-claude-tui-plugin** under **Plugins → Discover → Unofficial** (GitHub repositories tagged `magpie-plugin`). This GitHub discovery entry does **not** mean the Magpie project reviewed it. The package is not published in the `@magpie-community` npm organization.
+Alternatively, find **Guuuu233/claude-tui-boost** under **Plugins → Discover → Unofficial, on GitHub** (repositories tagged `magpie-plugin`). Install it without a `#tag`: main is kept at the latest release, and Magpie offers each new release as an update; a pinned tag never shows one. This GitHub discovery entry does **not** mean the Magpie project reviewed it. The package is not published in the `@magpie-community` npm organization.
 
 After installation, open the **Claude TUI** provider connection and choose **自动安装并登录 Claude（推荐）**:
 
@@ -176,9 +172,11 @@ The existing **连接已登录 Claude** method remains available for advanced us
 
 **Available since v0.2.4:** Claude Desktop's dedicated `/compact` request is recognized and summarized in a separate native Claude Code CLI session. User/assistant turns and structured tool/image blocks are retained; a system prompt is included as labelled archival context. Historical tool calls remain transcript evidence; the summary request has no tools, so those calls are not re-executed. The original conversation checkpoint is not resumed or overwritten. The full source history, including tool content and images, is written to an additional JSONL session under the configured Claude profile and passes through that profile's Claude Code authentication path; it can remain under the CLI's normal session-retention behavior.
 
-**In the published v0.2.7-rc.4 pre-release:** Quota cards use the native `claude -p /usage` command by default even when the profile includes file-backed OAuth credentials. The former direct endpoint reader is available only with explicit `usageMode: "direct"` in an adapter configuration, with a separate 60-second cache; it never silently falls back to OAuth when native reading fails. Neither mode sends prompts or transcripts as part of usage reporting. Native CLI parsing failures are reported as errors, never fabricated zero utilization. The current pre-release also handles structured CLI quota results and avoids mistaking a count of 403 requests for an HTTP 403 authentication error.
+**Since v0.2.7:** Quota cards use the native `claude -p /usage` command by default even when the profile includes file-backed OAuth credentials. The former direct endpoint reader is available only with explicit `usageMode: "direct"` in an adapter configuration, with a separate 60-second cache; it never silently falls back to OAuth when native reading fails. Neither mode sends prompts or transcripts as part of usage reporting. Native CLI parsing failures are reported as errors, never fabricated zero utilization. It also handles structured CLI quota results and avoids mistaking a count of 403 requests for an HTTP 403 authentication error.
 
-The bridge keeps a Claude Code process alive across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation, parallel tools and read-only recovery of certain interrupted conversations. Because the Desktop and CLI can reshape historic messages, some tool handoffs can still return HTTP 409 rather than risk executing a tool twice. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
+**Since v0.2.12 / v0.2.13:** Each conversation is served from the history its request carries. A request continuing a live or parked native run goes on in that session; any other request resumes the conversation's own native transcript when the history follows it and is otherwise rebuilt from that history, instead of being refused. A run parked on tool calls is reaped after five minutes and resumed from its transcript when the results arrive. Tool results that do not match the visible tool call still get HTTP 409; a second concurrent turn of one conversation gets 503 after waiting 60 seconds; requests without a conversation id run stateless. A completed tool reply is replayed only for the identical request (v0.2.13), and an exhausted Claude allowance is answered with 429 (v0.2.13). See [RECOVERY.md](RECOVERY.md).
+
+The bridge resumes each conversation's native Claude Code session across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation and parallel tools. A rebuilt model can still request a tool again; this is not an exactly-once guarantee. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
 
 Current user-message images are supported; historic image replay is not. macOS arm64 and Linux amd64 have received limited local/remote runtime checks; macOS amd64 and Linux arm64 builds are cross-compiled only. Windows-native PTY execution is not supported. See [COMPATIBILITY.md](COMPATIBILITY.md). Experimental crash recovery and strict legacy-migration gates are described in [RECOVERY.md](RECOVERY.md).
 
@@ -188,7 +186,7 @@ Magpie application updates do not replace this plugin's bundled runtime, but hos
 
 ### Test and independently build
 
-There is no lockfile in the initial snapshot. Dependencies are declared in `package.json` (`zod` is pinned); avoid executing dependency lifecycle scripts:
+There is no lockfile. Dependencies are declared in `package.json` (`zod` is pinned); avoid executing dependency lifecycle scripts:
 
 ```sh
 bun install --ignore-scripts
@@ -208,7 +206,7 @@ To build individual binaries using Go 1.27 or newer:
 (cd runtime && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../bin/magpie-tui-mcp-helper.linux-amd64 ./cmd/magpie-tui-mcp-helper)
 ```
 
-Repeat with `GOOS=darwin` and `GOARCH=arm64/amd64`, or `GOOS=linux GOARCH=arm64` for other supported targets. Cross-compiled binaries have not all been tested natively. **Important: the v0.1.0 GitHub Actions Ubuntu build produces different binary hashes from a macOS-hosted Go 1.27.1 build of identical source.** Therefore, the strict comparator above can fail on a different host even if the build is legitimate. Use the GitHub Actions log and released `SHA256SUMS` for release-artifact provenance and integrity; do not interpret a cross-host hash mismatch by itself as compromised source or claim bit-for-bit cross-host reproducibility. The exact cause of this toolchain/environment divergence has not yet been isolated.
+Repeat with `GOOS=darwin` and `GOARCH=arm64/amd64`, or `GOOS=linux GOARCH=arm64` for other supported targets. Cross-compiled binaries have not all been tested natively. The release workflow rebuilds all eight binaries on Ubuntu with Go 1.27.1, `CGO_ENABLED=0` and `-trimpath`, and refuses to publish unless each matches the committed binary byte for byte; released `SHA256SUMS` cover artifact integrity. (The v0.1.0 builds did differ between Ubuntu and macOS hosts; current builds with these settings match.)
 
 ### Provenance and maintenance
 

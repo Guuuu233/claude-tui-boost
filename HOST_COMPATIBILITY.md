@@ -1,6 +1,6 @@
 # Magpie host compatibility
 
-## Local candidate v0.2.7-rc.1
+## Scope
 
 This repository also tests against the exact upstream `v0.1.1268` commit `63be47717a9ca91fc89102078a1f1fff3e03e0ce`. The bundled runtime and helper are built from the plugin's own `runtime/` source, not from a private Magpie fork.
 
@@ -10,7 +10,7 @@ The runtime, MCP helper and adapted wrapper ship inside this plugin. Updating Ma
 
 ## Verified boundary
 
-On 2026-10-15 the isolated suites passed against:
+On 2026-10-22 (v0.2.13) the `Magpie host compatibility` workflow passed against the verified commit below, `v0.1.1268`, Magpie's latest release and upstream `main`. The verified commit was set on 2026-10-15, when the isolated suites passed against:
 
 - The deployed host source snapshot dated 2026-10-10 (baseline; local evidence).
 - Magpie `v0.1.1248`, commit `95e7c6bcc07629897f6703c31eaef477fcee4a13`. Upstream `main` pointed to the same commit when inspected.

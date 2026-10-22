@@ -2,13 +2,27 @@
 
 The plugin handles interrupted native Claude interactive sessions conservatively. When tool execution or delivery is uncertain, the runtime returns HTTP 409 rather than replaying `Write`, `Edit`, `Bash`, or another client-side tool.
 
-## Checkpoint integrity and empty retries (v0.2.8-rc.3 candidate)
+## Current behavior (v0.2.12 and later)
+
+Each conversation is served from the history its request carries:
+
+- A request that continues a live or parked native run (its tool results, or what the user said meanwhile) goes on in that native session. The safeguards and opt-in flags in the sections below apply to this path.
+- Any other request — after an interruption, a client-side edit or compaction, a restart, or a run reaped after its five minutes parked on tool calls — resumes the conversation's own native transcript when the history follows it, and otherwise starts a native session rebuilt from that history. It is not refused for not matching a checkpoint.
+- Tool results whose IDs do not match the tool call visible in the request's last assistant turn are still refused with HTTP 409.
+- One conversation runs one native turn at a time: a second request waits up to 60 seconds, then gets HTTP 503 with `Retry-After: 5`.
+- Requests without a stable conversation id (titles, classifiers, helper calls) run stateless beside it.
+- The same tool results delivered again after their reply was delivered get that reply back without a new native run — only when the whole request is identical (v0.2.13). Any other difference runs normally.
+- An exhausted Claude allowance is answered with HTTP 429 (v0.2.13).
+
+A rebuilt model can still *request* a tool again; this is not a general exactly-once guarantee. Check actual files before repeating `Edit`, `Write` or shell commands.
+
+## Checkpoint integrity and empty retries (since v0.2.8)
 
 All checkpoint lookups validate the file at the point of use. Invalid, insecure or oversized state returns HTTP 409; it must not be treated as a new conversation. A native resume also stops if its dirty checkpoint cannot be persisted before launch. Preserve damaged state for investigation rather than deleting it to force a fresh session.
 
 If the client resends exactly a known generated continuation followed by its synthetic error, with no new user content, removing that failed pair leaves an empty suffix. This remains a deliberate refusal and is regression-tested. A client error is not evidence that an ordinary task or tool was never executed; automatic replay remains prohibited without execution provenance.
 
-## Known persisted-resume 502 feedback (v0.2.8-rc.2 candidate)
+## Known persisted-resume 502 feedback (since v0.2.8)
 
 On a **clean, completed checkpoint**, Desktop can append an automatically generated continuation and a synthetic HTTP 502 if that continuation failed before the native Claude process started. A later ordinary user turn may then present that synthetic assistant error inside the historical suffix. The plugin can skip the strictly identified, text-only continuation/error pair; it cannot skip arbitrary error messages, old `tool_result`, model-authored responses or an ordinary user turn that failed for an unknown reason. This safety boundary deliberately prevents skipping work that might already have occurred.
 
@@ -34,7 +48,7 @@ Enabling this flag is **not** a license to replay unknown `Edit`/`Write`/`Bash` 
 
 Claude Desktop's dedicated `/compact` request may include completed historical `tool_use` and `tool_result` blocks. The runtime recognizes the compaction protocol and writes user/assistant turns plus structured history into a **separate native Claude Code session** for a tool-free summary turn; any system prompt is included as labelled archival context. It does not replay historical tools or resume/replace the original conversation checkpoint. This only addresses the compaction request shape; unrelated 409/502 failures remain subject to the normal fail-closed behavior.
 
-**Native input-limit diagnostic (post-v0.2.8 candidate):** A failed native Claude TUI turn may write a synthetic `invalid_request` assistant row followed by `turn_duration`, without invoking the normal Stop hook. The wrapper now recognizes the completed native failure and produces a terminal error instead of waiting for Desktop to time out. The interactive Runtime preserves the original `Prompt is too long` detail and HTTP 400 status when available. This is an error-reporting fix, **not** a larger context window or a guarantee that `/compact` itself will succeed; keep the original Desktop history intact after an input-limit failure. A synthetic, tool-free integration test verifies HTTP 400 in both streaming and non-streaming paths, but it does not replace a real Claude model canary.
+**Native input-limit diagnostic (since v0.2.9):** A failed native Claude TUI turn may write a synthetic `invalid_request` assistant row followed by `turn_duration`, without invoking the normal Stop hook. The wrapper now recognizes the completed native failure and produces a terminal error instead of waiting for Desktop to time out. The interactive Runtime preserves the original `Prompt is too long` detail and HTTP 400 status when available. This is an error-reporting fix, **not** a larger context window or a guarantee that `/compact` itself will succeed; keep the original Desktop history intact after an input-limit failure. A synthetic, tool-free integration test verifies HTTP 400 in both streaming and non-streaming paths, but it does not replace a real Claude model canary.
 
 To seed this separate session, the full source history, including tool content and images, is written as an additional JSONL transcript under the configured Claude profile and sent through that profile's Claude Code authentication path. The extra local transcript can remain according to the CLI's normal session-retention behavior. Keep the profile private and review its session files if you need to remove the extra copy.
 
