@@ -84,7 +84,7 @@ Magpie / OpenCode / 接入 Magpie 网关的客户端
 
 ### 安装与首次连接
 
-前提：支持 GitHub 插件安装的 Magpie、macOS/Linux（arm64 或 amd64）、官方 Claude Code CLI **2.1.268 或更新版本**、可运行 Bun/tmux 的环境。**原生 Windows 未支持**。
+前提：支持 GitHub 插件安装的 Magpie、macOS / Linux（arm64 或 amd64）或启用了 WSL2 的 Windows（默认 WSL2 发行版内需安装 `bun`、`tmux` 与官方 Claude Code CLI **2.1.268 或更新版本**；Windows 下通过 `wsl.exe` 自动桥接，纯原生 Windows 终端未支持）。
 
 ```sh
 magpie plugin add github:Guuuu233/claude-tui-boost
@@ -99,7 +99,7 @@ magpie plugin login claude-tui
 
 **安全优先原则：外部 `Edit`、`Write`、`Bash` 可能已经执行，却未把结果成功回传。收到 409/502 后不要无条件重试同一工具，也不要直接删除 checkpoint 或重放原始命令。**
 
-- **v0.2.12 起按请求自带的历史服务每个对话：** 能接上正在运行或停放的原生会话就继续；接不上（中断、客户端改写或压缩、重启、停放超时被回收）时，历史能接上该对话自己的原生 transcript 就续接，否则按请求里的结构化历史重建原生会话，不再因对不上 checkpoint 而拒绝。工具结果与请求中最后一轮可见工具调用的 ID 不符仍返回 409；同一对话已有一轮在运行时，新请求最多等 60 秒，然后返回 503（`Retry-After: 5`）；没有稳定会话 ID 的请求（标题、分类、辅助调用）走无状态运行。v0.2.13 起，已交付回复的工具结果被原样重发时，只有整个请求完全相同才直接返回原回复；Claude 额度用尽返回 429。详见 [RECOVERY.md](RECOVERY.md)。
+- **v0.2.12 起按请求自带的历史服务每个对话：** 能接上正在运行或停放的原生会话就继续；接不上（中断、客户端改写或压缩、重启、停放超时被回收）时，历史能接上该对话自己的原生 transcript 就续接，否则按请求里的结构化历史重建原生会话，不再因对不上 checkpoint 而拒绝。工具结果与请求中最后一轮可见工具调用的 ID 不符仍返回 409；同一对话已有一轮在运行时，新请求最多等 60 秒，然后返回 503（`Retry-After: 5`）；没有稳定会话 ID 的请求（标题、分类、辅助调用）走无状态运行。v0.2.13 起，已交付回复的工具结果被原样重发时，只有整个请求完全相同才直接返回原回复；Claude 额度用尽返回 429。v0.2.14 起，请求体上限从 16 MiB 提高到 32 MiB，超限直接返回 HTTP 413 `request_too_large`（不再返回会被重试的 502）。v0.2.15/v0.2.16 起支持 Windows（WSL2）自动桥接。详见 [RECOVERY.md](RECOVERY.md)。
 - MCP 工具长任务：生成的插件 MCP 服务调用上限为 30 分钟；等待工具结果的原生进程停放 5 分钟后回收（v0.2.12），结果晚到时从该对话自己的原生 transcript 续接；原生运行计时器 12 小时。**这些不是保证任务必定完成的 SLA**。
 - 动态历史内容：在 `main` 当前源码中，只有**严格匹配**的 token 余额提示可以在旧用户消息的独立文本块被删除时忽略；其他用户指令、工具参数和普通提醒依然严格校验。
 - 受控只读恢复（v0.2.3）：`MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT=1` **默认关闭**。只有活跃的原始工具回调、完全匹配的会话与模型、安全设置、已标记 Dirty 的持久化 checkpoint 等条件全部满足，才允许终止失配进程并启动一次**禁用工具的只读恢复轮次**。不会重新执行已经完成的修改，也不能复活此前已死亡的 MCP 回调。
@@ -113,7 +113,7 @@ magpie plugin login claude-tui
 
 - **安装与更新：** 用不带标签的 `github:Guuuu233/claude-tui-boost` 安装。主分支始终保持为最新正式版，有新版本时 Magpie 插件页会提示更新；带 `#标签` 或固定 commit 的安装永远不会提示更新。更新会重启插件宿主及其托管的 Runtime，请在没有工具执行时更新。GitHub 发布不会升级 systemd 等外部管理的 Runtime，需要在对应主机单独替换。各版本改动见 [RELEASE_NOTES.md](RELEASE_NOTES.md) 与 [CHANGELOG.md](CHANGELOG.md)。
 - 插件携带自己的 Runtime、Helper 和 Wrapper；升级 Magpie **不会自动替换这些文件**，却可能修改插件加载、模型 API 转换、会话标识、流式请求与登录流程，因此**不能承诺对所有未来 Magpie/Claude Code 版本兼容**。有按已验证版本、最新发布版、上游 `main` 执行的兼容检查，详见 [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md)。
-- 支持 macOS 与 Linux 的四种 CPU/OS 组合发布构建；交叉编译通过**不代表**四种平台全部经历真实 OAuth 与 GUI 测试。用户数据目录、订阅额度、历史会话和私人恢复凭证不会随 GitHub 安装包分发。
+- 支持 macOS 与 Linux 的四种 CPU/OS 组合发布构建，并在 Windows（`win32`）上通过 `wsl.exe` 自动桥接默认 WSL2 发行版运行对应 Linux 构建；交叉编译与单测通过**不代表**所有平台全部经历真实 OAuth 与 GUI 测试。用户数据目录、订阅额度、历史会话和私人恢复凭证不会随 GitHub 安装包分发。
 
 ### 安全与审计
 
@@ -135,7 +135,7 @@ This provider uses a locally installed, already signed-in Claude Code **interact
 
 ### Installation (from GitHub, not the community registry)
 
-Requirements: Magpie with GitHub plugin installation support, official Claude Code **v2.1.268 or newer** installed, and macOS or Linux (arm64 / x86_64). Bun is supplied by the Magpie plugin host. The automatic connection flow prepares tmux and a dedicated Claude profile; native Windows is unsupported. The plugin/runtime and Claude Code must run on the same machine; installing on a Mac does not update a VPS.
+Requirements: Magpie with GitHub plugin installation support, official Claude Code **v2.1.268 or newer** installed, and macOS, Linux (arm64 / x86_64) or Windows with WSL2 (`bun`, `tmux` and `claude` installed inside the default WSL2 distribution; bridged automatically via `wsl.exe`). The plugin/runtime and Claude Code must run on the same machine; installing on a Mac or Windows PC does not update a VPS.
 ```sh
 magpie plugin add github:Guuuu233/claude-tui-boost
 magpie plugin login claude-tui
@@ -145,7 +145,7 @@ Alternatively, find **Guuuu233/claude-tui-boost** under **Plugins → Discover �
 
 After installation, open the **Claude TUI** provider connection and choose **自动安装并登录 Claude（推荐）**:
 
-1. A visible terminal opens and prepares tmux. On macOS, missing Homebrew is installed through its official interactive installer; on Linux, supported package managers are apt-get, dnf and pacman. System password/installer confirmation prompts remain interactive.
+1. A visible terminal opens and prepares tmux (on Windows, Windows Terminal `wt.exe` or `cmd.exe /c start "" wsl.exe` opens inside WSL2). On macOS, missing Homebrew is installed through its official interactive installer; on Linux and WSL2, supported package managers are apt-get, dnf and pacman. System password/installer confirmation prompts remain interactive.
 2. Official `claude auth login --claudeai` opens the browser. Complete authorization there; paste a code into the terminal only if the official CLI asks for one.
 3. The plugin checks subscription login in its newly created private profile, starts the bundled runtime and verifies its readiness before saving the local connection.
 
@@ -174,11 +174,11 @@ The existing **连接已登录 Claude** method remains available for advanced us
 
 **Since v0.2.7:** Quota cards use the native `claude -p /usage` command by default even when the profile includes file-backed OAuth credentials. The former direct endpoint reader is available only with explicit `usageMode: "direct"` in an adapter configuration, with a separate 60-second cache; it never silently falls back to OAuth when native reading fails. Neither mode sends prompts or transcripts as part of usage reporting. Native CLI parsing failures are reported as errors, never fabricated zero utilization. It also handles structured CLI quota results and avoids mistaking a count of 403 requests for an HTTP 403 authentication error.
 
-**Since v0.2.12 / v0.2.13:** Each conversation is served from the history its request carries. A request continuing a live or parked native run goes on in that session; any other request resumes the conversation's own native transcript when the history follows it and is otherwise rebuilt from that history, instead of being refused. A run parked on tool calls is reaped after five minutes and resumed from its transcript when the results arrive. Tool results that do not match the visible tool call still get HTTP 409; a second concurrent turn of one conversation gets 503 after waiting 60 seconds; requests without a conversation id run stateless. A completed tool reply is replayed only for the identical request (v0.2.13), and an exhausted Claude allowance is answered with 429 (v0.2.13). See [RECOVERY.md](RECOVERY.md).
+**Since v0.2.12 – v0.2.16:** Each conversation is served from the history its request carries. A request continuing a live or parked native run goes on in that session; any other request resumes the conversation's own native transcript when the history follows it and is otherwise rebuilt from that history, instead of being refused. A run parked on tool calls is reaped after five minutes and resumed from its transcript when the results arrive. Tool results that do not match the visible tool call still get HTTP 409; a second concurrent turn of one conversation gets 503 after waiting 60 seconds; requests without a conversation id run stateless. A completed tool reply is replayed only for the identical request (v0.2.13), an exhausted Claude allowance is answered with 429 (v0.2.13), requests up to 32 MiB are accepted with larger ones answered as 413 `request_too_large` (v0.2.14), and Windows hosts automatically bridge into WSL2 via `wsl.exe` (v0.2.15/v0.2.16). See [RECOVERY.md](RECOVERY.md).
 
 The bridge resumes each conversation's native Claude Code session across turns and translates MCP `tool_use`/`tool_result` between Claude and the calling Agent. It supports streaming, cancellation and parallel tools. A rebuilt model can still request a tool again; this is not an exactly-once guarantee. Never blindly repeat `Edit`, `Write` or shell commands after an interrupted turn; check actual files first.
 
-Current user-message images are supported; historic image replay is not. macOS arm64 and Linux amd64 have received limited local/remote runtime checks; macOS amd64 and Linux arm64 builds are cross-compiled only. Windows-native PTY execution is not supported. See [COMPATIBILITY.md](COMPATIBILITY.md). Experimental crash recovery and strict legacy-migration gates are described in [RECOVERY.md](RECOVERY.md).
+Current user-message images are supported; historic image replay is not. macOS arm64 and Linux amd64 have received limited local/remote runtime checks; macOS amd64 and Linux arm64 builds are cross-compiled only. On Windows (`win32`), the plugin bridges into the default WSL2 Linux distribution via `wsl.exe`; Windows-native PTY execution without WSL2 is not supported. See [COMPATIBILITY.md](COMPATIBILITY.md). Experimental crash recovery and strict legacy-migration gates are described in [RECOVERY.md](RECOVERY.md).
 
 ### Magpie updates
 

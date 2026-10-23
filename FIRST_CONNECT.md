@@ -6,7 +6,7 @@
 
 在 Magpie「插件 → 发现 → GitHub 非官方插件」中找到 **Guuuu233/claude-tui-boost** 并安装，或手动添加 `github:Guuuu233/claude-tui-boost`（不要加 `#标签`，否则收不到更新）。随后打开供应商 **Claude TUI** 的连接入口，选择 **自动安装并登录 Claude（推荐）**。插件安装本身不会运行系统安装脚本。
 
-安装终端会自动打开。已有 tmux 时直接进入登录；缺少时通过系统包管理器安装。Mac 未装 Homebrew 时先运行 [Homebrew 官方安装器](https://brew.sh/)，其确认步骤和管理员密码提示保留；Linux 支持 apt-get、dnf、pacman，普通用户通过 sudo 输入密码。系统权限、网络连接和包管理器是否支持当前系统仍是实际前提。
+安装终端会自动打开（Windows 下自动打开 Windows Terminal `wt.exe` 或通过 `cmd.exe` 启动 WSL2 终端）。已有 tmux 时直接进入登录；缺少时通过系统包管理器安装。Mac 未装 Homebrew 时先运行 [Homebrew 官方安装器](https://brew.sh/)，其确认步骤和管理员密码提示保留；Linux 与 WSL2 支持 apt-get、dnf、pacman，普通用户通过 sudo 输入密码。系统权限、网络连接和包管理器是否支持当前系统仍是实际前提。
 
 Claude Code 随后运行官方 `claude auth login --claudeai`。在浏览器完成 Claude 订阅授权；需要手动粘贴授权码时，请粘贴到安装终端，不是聊天窗口。插件使用新建的独立配置目录，不读取或复制主账号凭证。
 

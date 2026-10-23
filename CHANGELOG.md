@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.16 — allow win32 in package.json os field and sync documentation (2026-10-23)
+
+- Add `win32` to `package.json#os` (`["darwin", "linux", "win32"]`) so npm/Bun on Windows does not reject plugin installation with `EBADPLATFORM`.
+- Synchronize `TECHNICAL_REFERENCE.md`, `FIRST_CONNECT.md`, `COMPATIBILITY.md`, `HOST_COMPATIBILITY.md` and `README` guides with `v0.2.14`–`v0.2.16` behavior (32 MiB request limit / HTTP 413 and Windows WSL2 automatic bridge).
+
 ## 0.2.15 — Windows (WSL2) automatic bridge support (2026-10-23)
 
 - When Magpie runs on native Windows (`win32`), managed mode now bridges automatic sign-in, the supervised Go Runtime, MCP helper, tmux wrapper and `/usage` quota reads into the default WSL2 Linux distribution via `wsl.exe` over `127.0.0.1` loopback.
