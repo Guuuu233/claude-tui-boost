@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { findExecutable, setupEnvironment } from "./first-connect.mjs";
+import { toWslPath, wslShellQuote } from "./wsl.mjs";
 
 const usageLine = /^Current (session|week(?: \(([^)]+)\))?):\s*([0-9]+(?:\.[0-9]+)?)% used(?:\s*·\s*resets (.+))?$/;
 const ansi = /\x1b\[[0-?]*[ -/]*[@-~]/g;
@@ -133,6 +134,7 @@ export function parseClaudeUsage(output, now = new Date()) {
 function runUsageCommand(executable, profileDir, env, {
   spawnProcess = spawn,
   timeoutMs = 15_000,
+  os = process.platform,
 } = {}) {
   return new Promise((resolve, reject) => {
     let child;
@@ -151,12 +153,23 @@ function runUsageCommand(executable, profileDir, env, {
       // refresh subprocess may contact Claude's official quota service.
       // Never weaken normal inference/TUI session privacy settings.
       delete childEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
-      child = spawnProcess(executable, args, {
-        cwd: env.HOME,
-        env: childEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      if (os === "win32" && executable === "wsl.exe") {
+        const wslProfile = toWslPath(profileDir);
+        const cmd = `export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH" CLAUDE_CONFIG_DIR=${wslShellQuote(wslProfile)} DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_AUTOUPDATER=1; unset CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; exec claude ${args.map(wslShellQuote).join(" ")}`;
+        child = spawnProcess("wsl.exe", ["--", "/bin/sh", "-lc", cmd], {
+          cwd: env.HOME,
+          env: childEnv,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+        });
+      } else {
+        child = spawnProcess(executable, args, {
+          cwd: env.HOME,
+          env: childEnv,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+        });
+      }
     } catch {
       reject(new Error("Could not start Claude Code /usage"));
       return;
@@ -325,7 +338,7 @@ async function readUsageFromEndpoint(accessToken, { fetchImpl = globalThis.fetch
   return { windows: apiUsageWindows(payload) };
 }
 
-async function readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode }) {
+async function readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode, os = process.platform }) {
   if (usageMode === 'direct') {
     const token = await readProfileAccessToken(profileDir);
     if (!token) throw new Error('Explicit direct quota mode requires a readable profile OAuth token');
@@ -339,8 +352,11 @@ async function readUsageUncached({ profileDir, env, command, spawnProcess, timeo
   const home = env.HOME || homedir();
   const cliEnv = setupEnvironment(env, home);
   let executable = command;
-  if (!executable) executable = await findExecutable("claude", cliEnv) ?? "claude";
-  const output = await runUsageCommand(executable, profileDir, cliEnv, { spawnProcess, timeoutMs });
+  if (!executable) {
+    if (os === 'win32') executable = 'wsl.exe';
+    else executable = await findExecutable("claude", cliEnv) ?? "claude";
+  }
+  const output = await runUsageCommand(executable, profileDir, cliEnv, { spawnProcess, timeoutMs, os });
   return parseClaudeUsage(output);
 }
 
@@ -352,6 +368,7 @@ export async function readClaudeUsage({
   timeoutMs,
   fetchImpl,
   usageMode = 'native',
+  os = process.platform,
 } = {}) {
   if (typeof profileDir !== "string" || !isAbsolute(profileDir)) {
     return { windows: [], error: "Claude profile directory must be an absolute path" };
@@ -374,7 +391,7 @@ export async function readClaudeUsage({
     }
   }
 
-  const request = readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode })
+  const request = readUsageUncached({ profileDir, env, command, spawnProcess, timeoutMs, fetchImpl, usageMode, os })
     .then(value => {
       const safeValue = { windows: value.windows.map(window => ({ ...window })) };
       usageCache.set(key, { expiresAt: Date.now() + usageCacheTtlMs, windows: safeValue.windows });

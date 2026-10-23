@@ -111,7 +111,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
   const currentRuntimeURL = () => {
     if (!portFile) return url;
     const stat = lstatSync(portFile);
-    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) ||
+    if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== 'win32' && (stat.mode & 0o077)) ||
         (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
       throw new Error('Claude TUI runtime port file must be private, regular and owned by the gateway user');
     }

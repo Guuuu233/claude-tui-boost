@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.15 — Windows (WSL2) automatic bridge support (2026-10-23)
+
+- When Magpie runs on native Windows (`win32`), managed mode now bridges automatic sign-in, the supervised Go Runtime, MCP helper, tmux wrapper and `/usage` quota reads into the default WSL2 Linux distribution via `wsl.exe` over `127.0.0.1` loopback.
+- Windows setup opens Windows Terminal (`wt.exe`) or `cmd.exe /c start wsl.exe`, translates drive paths (`C:\...` ↔ `/mnt/c/...`), stages Linux executables and 0600 runtime state onto the WSL2 Linux filesystem when `/mnt/*` DrvFs lacks POSIX permission bits, and relaxes host-side `0o600`/`0o700` mode checks on `win32`.
+
 ## 0.2.14 — 32 MiB requests; oversized requests answered as 413 (2026-10-23)
 
 - The plugin and the Runtime now accept requests up to 32 MiB, Anthropic's own request ceiling (16 MiB before). A long Claude Desktop or Science conversation that has read dozens of screenshots exceeded 16 MiB and could not continue.

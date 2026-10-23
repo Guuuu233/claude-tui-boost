@@ -9,7 +9,7 @@ on:
         description: 'Exact published package version (example: v0.2.7-rc.1)'
         required: true
         type: string
-        default: v0.2.14
+        default: v0.2.15
 
 permissions:
   contents: write
