@@ -125,9 +125,11 @@ func (rt *runtimeTUI) bridgeAuthV1(r *http.Request, body []byte) (string, error)
 // opaque sha256 of the caller's own session label; the runtime treats it as
 // the outer session without re-deriving.
 func (rt *runtimeTUI) serveSignedMessages(w http.ResponseWriter, r *http.Request) {
-	body, status, err := readBoundedRequestBody(w, r, requestLimits{body: 16 << 20}, nil)
+	// The plugin's limit (Anthropic's 32 MiB): long image-heavy conversations
+	// are ordinary requests here.
+	body, status, err := readBoundedRequestBody(w, r, requestLimits{body: 32 << 20}, nil)
 	if err != nil {
-		http.Error(w, err.Error(), status)
+		writeError(w, protoAnthropic, status, "magpie-tui-runtime: "+err.Error())
 		return
 	}
 	session, err := rt.bridgeAuthV1(r, body)

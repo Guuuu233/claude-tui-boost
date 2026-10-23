@@ -13,6 +13,7 @@ Each conversation is served from the history its request carries:
 - Requests without a stable conversation id (titles, classifiers, helper calls) run stateless beside it.
 - The same tool results delivered again after their reply was delivered get that reply back without a new native run — only when the whole request is identical (v0.2.13). Any other difference runs normally.
 - An exhausted Claude allowance is answered with HTTP 429 (v0.2.13).
+- A request larger than 32 MiB is answered with HTTP 413 `request_too_large`; compact the conversation (v0.2.14; the limit was 16 MiB before).
 
 A rebuilt model can still *request* a tool again; this is not a general exactly-once guarantee. Check actual files before repeating `Edit`, `Write` or shell commands.
 

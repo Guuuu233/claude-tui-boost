@@ -43,7 +43,12 @@ function normalizeConfig(config) {
   return { url, models };
 }
 
-async function boundedBody(request, limit = 16 << 20) {
+// Anthropic's own request ceiling. A long conversation full of screenshots
+// outgrows it; that is the client's to fix (compact), not a retryable failure.
+const REQUEST_LIMIT = 32 << 20;
+
+// Resolves to null when the body is larger than the limit.
+async function boundedBody(request, limit = REQUEST_LIMIT) {
   if (!request.body) return "";
   const reader = request.body.getReader();
   const chunks = [];
@@ -55,7 +60,7 @@ async function boundedBody(request, limit = 16 << 20) {
       size += value.byteLength;
       if (size > limit) {
         await reader.cancel();
-        throw new Error("Claude TUI request exceeds 16 MiB");
+        return null;
       }
       chunks.push(value);
     }
@@ -63,6 +68,18 @@ async function boundedBody(request, limit = 16 << 20) {
     reader.releaseLock();
   }
   return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+}
+
+// 413 in Anthropic's error shape: a thrown error reaches the client as a 502
+// that Magpie retries five times, each re-uploading the whole request.
+function requestTooLarge() {
+  return new Response(JSON.stringify({
+    type: "error",
+    error: {
+      type: "request_too_large",
+      message: "Claude TUI request exceeds 32 MiB; compact the conversation or remove images",
+    },
+  }), { status: 413, headers: { "content-type": "application/json" } });
 }
 
 async function requireAuth(getAuth) {
@@ -164,6 +181,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
             }
             const body = await boundedBody(request);
             if (request.signal.aborted) throw request.signal.reason;
+            if (body === null) return requestTooLarge();
             const session = digest === STATELESS ? "stateless" : mac(key, "magpie-bridge-account/v1\0" + digest);
             const timestamp = String(Math.floor(Date.now() / 1000));
             const nonce = randomBytes(16).toString("hex");
