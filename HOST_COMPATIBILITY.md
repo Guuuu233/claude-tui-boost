@@ -10,7 +10,7 @@ The runtime, MCP helper and adapted wrapper ship inside this plugin. Updating Ma
 
 ## Verified boundary
 
-On 2026-10-22 (v0.2.13) the `Magpie host compatibility` workflow passed against the verified commit below, `v0.1.1268`, Magpie's latest release and upstream `main`. The verified commit was set on 2026-10-15, when the isolated suites passed against:
+On 2026-10-23 (v0.2.15 / v0.2.16) the `Magpie host compatibility` workflow passed against the verified commit below, `v0.1.1268`, Magpie's latest release and upstream `main`. The verified commit was set on 2026-10-15, when the isolated suites passed against:
 
 - The deployed host source snapshot dated 2026-10-10 (baseline; local evidence).
 - Magpie `v0.1.1248`, commit `95e7c6bcc07629897f6703c31eaef477fcee4a13`. Upstream `main` pointed to the same commit when inspected.

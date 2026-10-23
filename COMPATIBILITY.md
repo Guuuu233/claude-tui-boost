@@ -6,7 +6,7 @@ See [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md) for the current Magpie host b
 
 | Runtime platform | Evidence |
 | --- | --- |
-| Linux x86_64 | v0.2.12 runs in production on two VPS hosts; v0.2.13 passed a Canary with real Claude model calls. Automatic/SSH login is tested with fake Claude and real tmux, not real new-user OAuth. |
+| Linux x86_64 | v0.2.14 runs in production on two VPS hosts (32 MiB limit & 413 verified); v0.2.13 passed a Canary with real Claude model calls. Automatic/SSH login is tested with fake Claude and real tmux, not real new-user OAuth. |
 | macOS arm64 | Native build host; isolated plugin/host/runtime/login tests. Current Mac Magpie installation, real OAuth and GUI installation have not been changed or retested. |
 | Linux arm64; macOS amd64 | Cross-compiled binaries; no native execution acceptance on these architectures. |
 | Windows (`win32` + WSL2) | Supported via automatic `wsl.exe` bridge into the default WSL2 Linux distribution (x86_64/arm64). Requires `bun`, `tmux` and `claude` inside WSL2. Tested in unit/contract suites; real Windows GUI acceptance pending. |

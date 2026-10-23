@@ -1,3 +1,11 @@
+# v0.2.16 — allow `win32` in `package.json#os` and synchronize documentation
+
+- **`package.json#os` includes `win32`:** `v0.2.15` added the Windows (WSL2) runtime bridge, but `package.json` still listed `"os": ["darwin", "linux"]`, which can cause npm/Bun on Windows to reject installation with `EBADPLATFORM`. `win32` is now included alongside `darwin` and `linux`.
+- **Documentation synchronized across all guides:** Updated `TECHNICAL_REFERENCE.md`, `FIRST_CONNECT.md`, `COMPATIBILITY.md`, `HOST_COMPATIBILITY.md`, `README.md` and `README.zh-CN.md` to cover the Windows (WSL2) automatic bridge and the `v0.2.14` 32 MiB / HTTP 413 behavior.
+- All eight prebuilt binaries in `bin/` are unchanged from `v0.2.14`/`v0.2.15`.
+
+## Previous release
+
 # v0.2.15 — Windows (WSL2) automatic bridge support
 
 When Magpie runs on native Windows (`win32`), the plugin's managed mode now bridges into the machine's default WSL2 Linux distribution through `wsl.exe` instead of refusing to load:
@@ -5,7 +13,7 @@ When Magpie runs on native Windows (`win32`), the plugin's managed mode now brid
 - **Automatic sign-in and terminal launch:** Opens Windows Terminal (`wt.exe`) or falls back to `cmd.exe /c start "" wsl.exe` to prepare `tmux` and run official `claude auth login --claudeai` inside WSL2.
 - **Supervised WSL2 Runtime over loopback:** Translates Windows paths (`C:\...` → `/mnt/c/...`), stages the bundled Linux Runtime/Helper binaries and 0600 runtime state onto the WSL2 native filesystem (`~/.cache/magpie-claude-tui`) so DrvFs mount permissions never trip POSIX `0600`/`0700` checks, and connects back to Windows Magpie over `127.0.0.1:<port>`.
 - **Quota readings:** Runs `claude -p /usage` inside WSL2 against the account's dedicated profile directory.
-- No Go Runtime changes; all delapan (8) prebuilt binaries in `bin/` are unchanged from `v0.2.14`.
+- No Go Runtime changes; all eight (8) prebuilt binaries in `bin/` are unchanged from `v0.2.14`.
 
 Verification: full JS/Bun test suite including new `test/wsl-bridge.test.mjs` covering Windows path translation, WSL2 dependency probing, `wt.exe`/`cmd.exe` terminal launch, WSL2 first-connect onboarding, managed runtime handshake with non-0600 Windows file modes, and WSL2 `/usage` execution; full Go test suite and byte-identical binary verification.
 
