@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.14 — 32 MiB requests; oversized requests answered as 413 (2026-10-23)
+
+- The plugin and the Runtime now accept requests up to 32 MiB, Anthropic's own request ceiling (16 MiB before). A long Claude Desktop or Science conversation that has read dozens of screenshots exceeded 16 MiB and could not continue.
+- A request over the limit is answered with HTTP 413 `request_too_large` in Anthropic's error shape instead of a thrown error. Magpie turned that error into a 502 and retried it five times, re-uploading the whole request each time; the client now gets one clear answer and can compact the conversation.
+
 ## 0.2.13 — exact-request tool replay; usage limits answered as 429 (2026-10-22)
 
 - A repeated tool-result delivery whose reply was already delivered is answered from that reply only when the whole request matches: account, model, system prompt, tools and their schemas, messages, tool_choice, thinking/effort, output schema, max_tokens, temperature, top_p and stop sequences. v0.2.12 compared the messages alone, so the same history under another system prompt, tool set or settings could get the old answer.

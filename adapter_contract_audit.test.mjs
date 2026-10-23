@@ -87,8 +87,25 @@ test('cancelled or oversized request is rejected without upstream side effects',
   const ctl = new AbortController();
   ctl.abort(new Error('synthetic cancellation'));
   await assert.rejects(loader.fetch(url + 'messages', { method: 'POST', headers: x.out.headers, body, signal: ctl.signal }), /synthetic cancellation/);
-  await assert.rejects(loader.fetch(url + 'messages', { method: 'POST', headers: x.out.headers, body: 'x'.repeat((16 << 20) + 1) }), /exceeds 16 MiB/);
+  // Too large is answered, not thrown: a thrown error becomes a retried 502.
+  const big = await loader.fetch(url + 'messages', { method: 'POST', headers: x.out.headers, body: 'x'.repeat((32 << 20) + 1) });
+  assert.equal(big.status, 413);
+  const err = await big.json();
+  assert.equal(err.type, 'error');
+  assert.equal(err.error.type, 'request_too_large');
+  assert.match(err.error.message, /exceeds 32 MiB/);
   assert.equal(calls, 0);
+});
+
+test('a request between 16 and 32 MiB reaches the runtime', async () => {
+  let sent;
+  const x = make(async (_url, init) => { sent = init.body; return new Response('ok'); });
+  x.stamp('sandbox-large-images');
+  const loader = await x.load();
+  const large = 'x'.repeat(20 << 20);
+  const res = await loader.fetch(url + 'messages', { method: 'POST', headers: x.out.headers, body: large });
+  assert.equal(res.status, 200);
+  assert.equal(sent.length, large.length);
 });
 
 test('runtime redirects and non-loopback target are refused', async () => {

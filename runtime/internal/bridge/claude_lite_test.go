@@ -661,3 +661,21 @@ func TestLiteStatelessRunsShareAFixedCwdAndLeaveNoSession(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// A long conversation full of screenshots is an ordinary request up to
+// Anthropic's 32 MiB; past it the client gets a 413 it can act on (compact).
+func TestLiteSignedRequestSizeLimit(t *testing.T) {
+	rt, _ := scRuntime(t)
+	post := func(size int) (int, string) {
+		rec := httptest.NewRecorder()
+		rt.serveSignedMessages(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(strings.Repeat("x", size))))
+		return rec.Code, rec.Body.String()
+	}
+	if code, out := post(20 << 20); code != http.StatusUnauthorized {
+		t.Fatalf("a 20 MiB request was not read through to authentication: %d %.200s", code, out)
+	}
+	code, out := post(32<<20 + 1)
+	if code != http.StatusRequestEntityTooLarge || !strings.Contains(out, `"request_too_large"`) {
+		t.Fatalf("an oversized request answered %d %.200s", code, out)
+	}
+}

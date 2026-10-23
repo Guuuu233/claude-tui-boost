@@ -1,3 +1,16 @@
+# v0.2.14 — 32 MiB requests, and oversized requests answered as 413
+
+A Claude Desktop conversation that had read 77 screenshots since its last compaction carried 15.4 MiB of base64 images and exceeded the plugin's 16 MiB request limit. The plugin threw an error, which Magpie reported as HTTP 502 and retried five times, re-uploading the whole request each time (about four minutes per user turn), and the conversation could not continue.
+
+- The plugin and the Runtime's signed messages endpoint now accept requests up to 32 MiB, Anthropic's own request ceiling. Magpie itself already passes requests of this size.
+- A larger request is answered with HTTP 413 and an Anthropic `request_too_large` error ("compact the conversation or remove images") instead of a thrown error, so it is not retried and the client can act on it. Nothing is sent to the Runtime for it.
+- The Runtime answers its own oversized or unreadable request bodies in Anthropic's error shape.
+- No other behaviour changes; all v0.2.13 protections remain.
+
+Verification: full Go tests and vet, full plugin tests, new tests for a 20 MiB request reaching the Runtime and for a request over 32 MiB getting 413 in both the plugin and the Runtime (they fail when either change is undone), and byte-identical rebuilds of all eight Runtime/Helper binaries checked by `scripts/verify-source-binaries.sh`. **Release publication by itself does not restart VPS services or upgrade a running process.**
+
+## Previous release
+
 # v0.2.13 — exact-request tool replay, and usage limits answered as 429
 
 v0.2.12 answers a repeated delivery of tool results whose reply was already delivered from that stored reply, without starting another native run. It recognised the repeat by the message history alone, so a request with the same history but a different system prompt, tool set, tool schema, model or generation settings could be answered with a reply meant for another request.

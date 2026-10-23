@@ -55,7 +55,7 @@ Magpie-compatible Agent / SDK client
 
 **Requirements:** Magpie with GitHub plugin support; official Claude Code CLI **2.1.268+**; macOS or Linux (arm64/x64). The login flow can prepare tmux; Bun comes from the Magpie host. Native Windows is not supported. Install on the **machine running Magpie and Claude Code** (including a VPS), not just on a remote client.
 
-**1. Install** (current release: [v0.2.13](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.13)):
+**1. Install** (current release: [v0.2.14](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.14)):
 
 ```sh
 magpie plugin add github:Guuuu233/claude-tui-boost
@@ -82,7 +82,7 @@ The main branch is kept at the latest published release, so Magpie shows an upda
 | [Technical reference](TECHNICAL_REFERENCE.md) | Advanced configuration, exact security effects, tests and builds |
 | [Release notes](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md) | What's new and what remains experimental |
 
-**Current release:** `v0.2.13` replays a completed tool reply only for the very same request and answers an exhausted Claude allowance with 429 instead of 502. Since `v0.2.12` each conversation is served from its own history: an interrupted or rewritten conversation is rebuilt rather than refused. Tool-replay boundaries in long, complex sessions remain experimental; see [release notes](RELEASE_NOTES.md).
+**Current release:** `v0.2.14` accepts requests up to 32 MiB (long, image-heavy conversations) and answers larger ones with 413 rather than a retried 502. `v0.2.13` replays a completed tool reply only for the very same request and answers an exhausted Claude allowance with 429 instead of 502. Since `v0.2.12` each conversation is served from its own history: an interrupted or rewritten conversation is rebuilt rather than refused. Tool-replay boundaries in long, complex sessions remain experimental; see [release notes](RELEASE_NOTES.md).
 
 ## Contribute
 
