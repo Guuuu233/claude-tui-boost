@@ -68,7 +68,7 @@ export async function runSetup(config, { env = process.env, find = findExecutabl
 
 export async function readSetupConfig(configPath, env = process.env) {
   const st = await lstat(configPath);
-  if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o777) !== 0o600) throw new Error('Setup config is not a private regular file');
+  if (!st.isFile() || st.isSymbolicLink() || (!configPath.startsWith('/mnt/') && (st.mode & 0o777) !== 0o600)) throw new Error('Setup config is not a private regular file');
   const config = JSON.parse(await readFile(configPath, 'utf8'));
   const session = dirname(configPath);
   privatePath(session, config.home);

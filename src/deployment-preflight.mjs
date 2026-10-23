@@ -9,7 +9,7 @@ function privateRegular(path, uid, errors, label) {
     errors.push(`${label} must be a real regular file, not a symlink`);
     return false;
   }
-  if ((stat.mode & 0o077) !== 0) errors.push(`${label} must not be readable or writable by group/others`);
+  if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) errors.push(`${label} must not be readable or writable by group/others`);
   if (uid !== undefined && stat.uid !== uid) errors.push(`${label} is not owned by the Magpie service UID`);
   return true;
 }

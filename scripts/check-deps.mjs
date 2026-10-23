@@ -42,34 +42,47 @@ if (isBun) {
 }
 
 // The TUI runtime drives the existing Claude CLI inside tmux, matching the
-// deployed -p-to-Wrapper architecture. Both are required for the full chain;
-// neither is invoked here.
-probe("tmux", "tmux", ["-V"], /^tmux \d/);
-const claude = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 10000 });
-if (claude.error || claude.status !== 0) {
-  fail("claude", "Claude CLI not found on PATH (runtime drives the installed native CLI)");
+// deployed -p-to-Wrapper architecture. On Windows hosts, the runtime and CLI
+// run inside the default WSL2 Linux distribution via wsl.exe.
+if (process.platform === "win32") {
+  const wsl = spawnSync("wsl.exe", ["--", "sh", "-lc", 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; tmux -V && claude --version && bun --version'], { encoding: "utf8", timeout: 15000, windowsHide: true });
+  if (wsl.error || wsl.status !== 0) {
+    fail("wsl2", "wsl.exe or required Linux tools (tmux, claude, bun) not found in default WSL2 distro");
+  } else {
+    ok("wsl2", wsl.stdout.trim().split(/\r?\n/).join(" | "));
+  }
 } else {
-  ok("claude", (claude.stdout || "").trim().split("\n")[0]);
+  probe("tmux", "tmux", ["-V"], /^tmux \d/);
+  const claude = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 10000 });
+  if (claude.error || claude.status !== 0) {
+    fail("claude", "Claude CLI not found on PATH (runtime drives the installed native CLI)");
+  } else {
+    ok("claude", (claude.stdout || "").trim().split("\n")[0]);
+  }
 }
 
 // The runtime is usable either as a prebuilt binary (binary archives ship
 // bin/magpie-tui-runtime) or as package Go sources that build one. Report
 // which actually exists — never claim a missing source tree is present.
+const plat = process.platform === "win32" ? "linux" : process.platform;
+const arch = process.arch === "x64" ? "amd64" : process.arch;
 const rtBin = join(root, "bin/magpie-tui-runtime");
+const rtPlatBin = join(root, `bin/magpie-tui-runtime.${plat}-${arch}`);
 const rtHelperBin = join(root, "bin/magpie-tui-mcp-helper");
+const rtHelperPlatBin = join(root, `bin/magpie-tui-mcp-helper.${plat}-${arch}`);
 const helperSource = join(root, "runtime/internal/claudebridge/mcp.go");
 const helperMain = join(root, "runtime/cmd/magpie-tui-mcp-helper/main.go");
 const runtimeEntry = join(root, "runtime/cmd/magpie-tui-runtime/main.go");
-const statIsExecutable = p => { try { return statSync(p).isFile() && (statSync(p).mode & 0o111) !== 0; } catch { return false; } };
-const hasRuntimeBin = statIsExecutable(rtBin);
+const statIsExecutable = p => { try { return statSync(p).isFile() && (process.platform === "win32" || (statSync(p).mode & 0o111) !== 0); } catch { return false; } };
+const hasRuntimeBin = statIsExecutable(rtBin) || statIsExecutable(rtPlatBin);
 const hasRuntimeSrc = existsSync(runtimeEntry);
-const hasHelperBin = statIsExecutable(rtHelperBin);
+const hasHelperBin = statIsExecutable(rtHelperBin) || statIsExecutable(rtHelperPlatBin);
 const hasHelperSrc = existsSync(helperSource) && existsSync(helperMain);
 hasHelperBin || hasHelperSrc
-  ? ok("runtime-mcp-helper", hasHelperBin ? "prebuilt binary present (bin/magpie-tui-mcp-helper)" : "vendored source present")
+  ? ok("runtime-mcp-helper", hasHelperBin ? "prebuilt binary present" : "vendored source present")
   : fail("runtime-mcp-helper", "no packaged MCP helper: bin/magpie-tui-mcp-helper and runtime/{internal/claudebridge,cmd} both missing");
 hasRuntimeBin || hasRuntimeSrc
-  ? ok("runtime-entry", hasRuntimeBin ? "prebuilt binary present (bin/magpie-tui-runtime)" : "extracted runtime entry present")
+  ? ok("runtime-entry", hasRuntimeBin ? "prebuilt binary present" : "extracted runtime entry present")
   : fail("runtime-entry", "no packaged runtime: bin/magpie-tui-runtime and runtime/cmd/magpie-tui-runtime both missing");
 
 // Vendored Wrapper (claude-bridge-magpie) is shipped in the package; its
@@ -84,7 +97,7 @@ existsSync(bridgeCli)
 existsSync(zodPkg)
   ? ok("bridge-dep-zod", "bundled zod dependency present (root node_modules)")
   : fail("bridge-dep-zod", "bundled zod missing — package root node_modules/zod absent");
-probe("bun", "bun", ["--version"], /^\d+\.\d+/);
+if (process.platform !== "win32") probe("bun", "bun", ["--version"], /^\d+\.\d+/);
 
 if (failures.length) {
   console.error(`\n${failures.length} dependency check(s) failed: ${failures.join(", ")}`);

@@ -9,7 +9,7 @@ See [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md) for the current Magpie host b
 | Linux x86_64 | v0.2.12 runs in production on two VPS hosts; v0.2.13 passed a Canary with real Claude model calls. Automatic/SSH login is tested with fake Claude and real tmux, not real new-user OAuth. |
 | macOS arm64 | Native build host; isolated plugin/host/runtime/login tests. Current Mac Magpie installation, real OAuth and GUI installation have not been changed or retested. |
 | Linux arm64; macOS amd64 | Cross-compiled binaries; no native execution acceptance on these architectures. |
-| Native Windows / WSL | Unsupported by this distribution's interactive runtime. A Windows client may connect to Magpie running this plugin on a supported VPS. No Windows launcher is included. |
+| Windows (`win32` + WSL2) | Supported via automatic `wsl.exe` bridge into the default WSL2 Linux distribution (x86_64/arm64). Requires `bun`, `tmux` and `claude` inside WSL2. Tested in unit/contract suites; real Windows GUI acceptance pending. |
 
 The runtime/helper binaries for all four macOS/Linux combinations ship in `bin/`. Bun is required for the plugin and vendored TypeScript wrapper, tmux for the native interactive session, and an already installed official Claude Code CLI for login. The automatic connection action prepares tmux and, on macOS when required, Homebrew. Bun suffices for the `.mjs` helpers; a separate Node installation is not required. Automatic subscription status verification requires Claude CLI 2.1.268 or newer and an exact dedicated config-directory match.
 

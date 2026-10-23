@@ -21,6 +21,7 @@ import { createHooks, PROVIDER_ID, _internal } from "./index.mjs";
 import { readClaudeUsage } from "./claude-usage.mjs";
 import { runtimeEnvironment } from "./runtime-environment.mjs";
 import { beginFirstConnect, findExecutable, setupEnvironment } from "./first-connect.mjs";
+import { isPrivateFileMode, probeWslDeps, toWslPath, wslEnvAssignments, wslShellQuote } from "./wsl.mjs";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SUPERVISOR = join(packageRoot, "scripts", "managed-runtime-supervisor.mjs");
@@ -73,8 +74,10 @@ function profileDir(raw, home = realpathSync(homedir())) {
 
 function assertNoSymlinkPath(path, finalKind = "any") {
   const target = resolve(path);
-  let current = sep;
-  for (const component of target.split(sep).filter(Boolean)) {
+  const m = target.match(/^[A-Za-z]:\\/);
+  let current = m ? m[0] : sep;
+  const rest = m ? target.slice(m[0].length) : target;
+  for (const component of rest.split(sep).filter(Boolean)) {
     current = join(current, component);
     let st;
     try { st = lstatSync(current); } catch (error) {
@@ -113,7 +116,12 @@ function profileRoutesLoopback(profile, env) {
 }
 
 // ---------- dependency probes (actionable, no installs, no spawning) ----------
-async function probeDeps(env = process.env) {
+async function probeDeps(env = process.env, os = platform()) {
+  if (os === "win32") {
+    const wsl = await probeWslDeps({ env });
+    if (!wsl.wsl) return { wsl: null, bun: null, tmux: null, claude: null };
+    return { bun: wsl.bun, tmux: wsl.tmux, claude: wsl.claude, arch: wsl.arch, node: wsl.node };
+  }
   const clean = setupEnvironment(env, realpathSync(env.HOME || homedir()));
   return {
     bun: await findExecutable("bun", clean) ?? (process.versions?.bun ? process.execPath : null),
@@ -121,31 +129,29 @@ async function probeDeps(env = process.env) {
     claude: await findExecutable("claude", clean),
   };
 }
-const missingDeps = d => Object.entries(d).filter(([, v]) => !v).map(([k]) => k);
+const missingDeps = d => ["wsl", "bun", "tmux", "claude"].filter(k => k in d && !d[k]);
 
 // The runtime's connection key is derived from the managed secret: the
 // supervisor passes --managed-key so <state>/key holds exactly this value
 // (persistent across restarts) and the plugin signs without ever surfacing
 // the key to the host GUI or logs.
 const runtimeKey = spec => createHmac("sha256", spec.managed).update("magpie-tui-runtime-key/v1").digest("hex");
-const depsHint = missing =>
-  `missing dependencies: ${missing.join(", ")}. ` +
-  `Install them yourself (no automatic global install is attempted): ` +
-  `bun → https://bun.sh, tmux → your package manager, claude → https://claude.com/claude-code. ` +
-  `Windows requires an existing WSL2 distro; there is no native win32 runtime.`;
+const depsHint = (missing, os = platform()) =>
+  `missing dependencies${os === "win32" ? " in WSL2" : ""}: ${missing.join(", ")}. ` +
+  `Install them${os === "win32" ? " inside your default WSL2 Linux distribution" : " yourself"} (no automatic global install is attempted): ` +
+  `bun → https://bun.sh, tmux → your package manager, claude → https://claude.com/claude-code.` +
+  (os === "win32" ? ` Windows runs the Claude TUI runtime inside WSL2 via wsl.exe.` : "");
 
 // ---------- runtime entry resolution (bundled prebuilt, no Go required) ----------
-function runtimeEntry() {
-  const exe = process.platform === "win32" ? "magpie-tui-runtime.exe" : "magpie-tui-runtime";
-  const plat = { darwin: "darwin", linux: "linux" }[process.platform];
-  const arch = { arm64: "arm64", x64: "amd64" }[process.arch] ?? process.arch;
+function runtimeEntry(os = process.platform, cpuArch = process.arch) {
+  const plat = os === "win32" ? "linux" : { darwin: "darwin", linux: "linux" }[os];
+  const arch = { arm64: "arm64", x64: "amd64" }[cpuArch] ?? cpuArch;
   const candidates = [
-    join(packageRoot, "bin", exe),
+    os === "win32" ? null : join(packageRoot, "bin", "magpie-tui-runtime"),
     plat ? join(packageRoot, "bin", `magpie-tui-runtime.${plat}-${arch}`) : null,
-    plat ? join(packageRoot, "bin", `magpie-tui-runtime.${plat}-${arch}${process.platform === "win32" ? ".exe" : ""}`) : null,
   ].filter(Boolean);
   for (const c of candidates) {
-    try { if (statSync(c).isFile() && (statSync(c).mode & 0o111)) return c; } catch {}
+    try { if (statSync(c).isFile() && (os === "win32" || (statSync(c).mode & 0o111))) return c; } catch {}
   }
   return null;
 }
@@ -156,11 +162,11 @@ const bridgeEntry = () => {
   }
   return null;
 };
-const helperEntry = () => {
-  const plat = { darwin: "darwin", linux: "linux" }[process.platform];
-  const arch = { arm64: "arm64", x64: "amd64" }[process.arch] ?? process.arch;
-  for (const p of [join(packageRoot, "bin", "magpie-tui-mcp-helper"), plat && join(packageRoot, "bin", `magpie-tui-mcp-helper.${plat}-${arch}`)].filter(Boolean)) {
-    try { if (statSync(p).isFile() && (statSync(p).mode & 0o111)) return p; } catch {}
+const helperEntry = (os = process.platform, cpuArch = process.arch) => {
+  const plat = os === "win32" ? "linux" : { darwin: "darwin", linux: "linux" }[os];
+  const arch = { arm64: "arm64", x64: "amd64" }[cpuArch] ?? cpuArch;
+  for (const p of [os === "win32" ? null : join(packageRoot, "bin", "magpie-tui-mcp-helper"), plat && join(packageRoot, "bin", `magpie-tui-mcp-helper.${plat}-${arch}`)].filter(Boolean)) {
+    try { if (statSync(p).isFile() && (os === "win32" || (statSync(p).mode & 0o111))) return p; } catch {}
   }
   return null;
 };
@@ -179,19 +185,30 @@ export function createManagedHooks({
   transport,              // test seam: forwarded to createHooks fetch
   usageReader = readClaudeUsage, // test seam: isolated account-scoped quota reads
   env = process.env,
+  os = platform(),
 } = {}) {
-  if (platform() === "win32") {
-    throw new Error(
-      "magpie-claude-tui managed mode does not support native Windows: the runtime " +
-      "drives the Claude TUI through tmux on a Linux PTY. Use an existing WSL2 " +
-      "distribution and install the plugin inside it; there is no win32 build.");
-  }
-  const home = realpathSync(env.HOME || homedir());
+  const home = realpathSync(env.HOME || env.USERPROFILE || homedir());
   const stateRoot = typeof input.directory === "string" && isAbsolute(input.directory)
     ? join(input.directory, "magpie-claude-tui")
     : join(env.XDG_CONFIG_HOME || join(home, ".config"), "magpie-claude-tui");
-  const launch = spawnRuntime ?? ((argv, opts) => spawn(process.execPath, argv, opts));
-  const dependencyProbe = deps ?? (() => probeDeps(env));
+  const dependencyProbe = deps ?? (() => probeDeps(env, os));
+  const launch = spawnRuntime ?? ((argv, opts) => {
+    if (os === "win32") {
+      const envAssigns = wslEnvAssignments({
+        ...opts?.env,
+        HOME: toWslPath(home),
+        CLAUDE_CONFIG_DIR: opts?.env?.CLAUDE_CONFIG_DIR ? toWslPath(opts.env.CLAUDE_CONFIG_DIR) : undefined,
+      }).join(" ");
+      const jsRunner = opts?.wslRunner || "bun";
+      const cmd = `export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH" ${envAssigns}; exec ${wslShellQuote(jsRunner)} ${argv.map(wslShellQuote).join(" ")}`;
+      return spawn("wsl.exe", ["--", "/bin/sh", "-lc", cmd], {
+        env: opts?.env,
+        stdio: opts?.stdio ?? ["pipe", "ignore", "inherit"],
+        windowsHide: true,
+      });
+    }
+    return spawn(process.execPath, argv, opts);
+  });
   const loaderCache = new Map(); // storedKey -> built loader options
 
   const safeChildEnv = profile => runtimeEnvironment({ ...setupEnvironment(env, home), CLAUDE_CONFIG_DIR: profile }, env);
@@ -216,13 +233,20 @@ export function createManagedHooks({
     if (profileDir(spec.profile, home) !== spec.profile || profileRoutesLoopback(spec.profile, safeChildEnv(spec.profile))) {
       throw new Error("Selected Claude profile is no longer safe for managed startup; choose a real dedicated profile without loopback Anthropic routing.");
     }
-    const entry = entryOf ? entryOf() : runtimeEntry();
+    let wslInfo = null;
+    if (os === "win32") {
+      wslInfo = await dependencyProbe();
+      const missing = missingDeps(wslInfo);
+      if (missing.length) throw new Error(depsHint(missing, os));
+    }
+    const targetArch = (os === "win32" && wslInfo?.arch) ? wslInfo.arch : process.arch;
+    const entry = entryOf ? entryOf() : runtimeEntry(os, targetArch);
     if (!entry) throw new Error(
       "no bundled magpie-tui-runtime binary for this platform in the package " +
       "(expected bin/magpie-tui-runtime[.<os>-<arch>]). The package ships " +
       "darwin/linux arm64+x64; other platforms are unsupported.");
     const bridge = bridgeEntry();
-    const helper = helperEntry();
+    const helper = helperEntry(os, targetArch);
     const accountDir = join(stateRoot, "accounts", sha(spec.managed).slice(0, 16));
     const stateDir = join(accountDir, "state");
     await ensurePrivateDirectory(stateRoot);
@@ -231,24 +255,28 @@ export function createManagedHooks({
     const readyFile = join(accountDir, `.ready-${hex(16)}.json`);
     assertNoSymlinkPath(readyFile, "file");
 
+    const mapPath = p => (os === "win32" && p ? toWslPath(p) : p);
+    const targetStateDir = mapPath(stateDir);
+
     // Persisted owned key: the runtime mints/validates it under --reuse-key
     // (0600 regular file, 64 hex). It never leaves the state dir.
     const args = [
-      SUPERVISOR,
-      "--runtime", entry,
-      "--state-dir", stateDir,
-      "--ready-file", readyFile,
+      mapPath(SUPERVISOR),
+      "--runtime", mapPath(entry),
+      "--state-dir", targetStateDir,
+      "--ready-file", mapPath(readyFile),
       "--managed-key", runtimeKey(spec),
       "--runtime-arg", "--reuse-key",
     ];
-    if (bridge) args.push("--runtime-arg", "--bridge", "--runtime-arg", bridge);
-    if (helper) args.push("--runtime-arg", "--helper", "--runtime-arg", helper);
-    args.push("--runtime-arg", "--claude-config-dir", "--runtime-arg", spec.profile);
+    if (bridge) args.push("--runtime-arg", "--bridge", "--runtime-arg", mapPath(bridge));
+    if (helper) args.push("--runtime-arg", "--helper", "--runtime-arg", mapPath(helper));
+    args.push("--runtime-arg", "--claude-config-dir", "--runtime-arg", mapPath(spec.profile));
     args.push("--runtime-arg", "--models", "--runtime-arg", spec.models.join(","));
 
     const child = launch(args, {
       env: safeChildEnv(spec.profile),
       stdio: ["pipe", "ignore", "inherit"],
+      wslRunner: wslInfo?.bun || wslInfo?.node || "bun",
     });
     const exited = new Promise((res, rej) => {
       child.once("error", rej);
@@ -260,10 +288,14 @@ export function createManagedHooks({
         try {
           assertNoSymlinkPath(readyFile, "file");
           const ready = JSON.parse(await Promise.race([readFile(readyFile, "utf8"), exited]));
-          if (!Number.isSafeInteger(child.pid) || ready?.supervisorPid !== child.pid ||
+          const pidMatches = os === "win32"
+            ? (Number.isSafeInteger(ready?.supervisorPid) && ready.supervisorPid >= 1)
+            : (Number.isSafeInteger(child.pid) && ready?.supervisorPid === child.pid);
+          const stateMatches = ready?.stateDir === resolve(stateDir) || ready?.stateDir === targetStateDir;
+          if (!pidMatches ||
               !Number.isSafeInteger(ready?.pid) || ready.pid < 1 ||
               !Number.isInteger(ready?.port) || ready.port < 1 || ready.port > 65535 ||
-              ready.stateDir !== resolve(stateDir)) {
+              !stateMatches) {
             throw new Error("managed runtime readiness did not match the current owned supervisor");
           }
           const keyPath = join(stateDir, "key");
@@ -275,7 +307,7 @@ export function createManagedHooks({
             readFile(keyPath, "utf8"),
             readFile(modelsPath, "utf8"),
           ]);
-          if (keyHex.trim() !== runtimeKey(spec) || (statSync(keyPath).mode & 0o777) !== 0o600) {
+          if (keyHex.trim() !== runtimeKey(spec) || !isPrivateFileMode(statSync(keyPath).mode, os)) {
             throw new Error("managed runtime key file did not match the account-owned private key");
           }
           const descriptor = JSON.parse(modelsRaw);
@@ -350,7 +382,7 @@ export function createManagedHooks({
         type: "oauth",
         label: "自动安装并登录 Claude（推荐）",
         async authorize() {
-          const session = await onboarding({ home, stateRoot, env });
+          const session = await onboarding({ home, stateRoot, env, os, wslDeps: os === "win32" ? dependencyProbe : undefined });
           return {
             url: "",
             method: "auto",
@@ -363,7 +395,7 @@ export function createManagedHooks({
                 const profile = profileDir(prepared.profile, home);
                 if (profileRoutesLoopback(profile, {})) throw new Error("专用配置不能指向本地反向代理。");
                 const missing = missingDeps(await dependencyProbe());
-                if (missing.length) throw new Error(depsHint(missing));
+                if (missing.length) throw new Error(depsHint(missing, os));
                 const spec = { v: 1, profile, models: modelList(prepared.models.join(",")), managed: hex(24) };
                 spec.state = join(stateRoot, "accounts", sha(spec.managed).slice(0, 16), "state");
                 const key = encodeKey(spec);
@@ -404,7 +436,7 @@ export function createManagedHooks({
           };
           spec.state = join(stateRoot, "accounts", sha(spec.managed).slice(0, 16), "state");
           const missing = missingDeps(await dependencyProbe());
-          if (missing.length) throw new Error(depsHint(missing));
+          if (missing.length) throw new Error(depsHint(missing, os));
           // The GUI saves the opaque callback key as API auth. The callback
           // only connects the host to the selected local profile; it performs
           // and verifies no Claude login or OAuth exchange.
@@ -432,7 +464,7 @@ export function createManagedHooks({
         } catch {
           return { windows: [], error: "The Claude profile for this account is unavailable" };
         }
-        return usageReader({ profileDir: profile, env: safeChildEnv(profile) });
+        return usageReader({ profileDir: profile, env: safeChildEnv(profile), os });
       },
       async loader(getAuth) {
         const auth0 = await getAuth();

@@ -6,6 +6,7 @@ import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { constants, lstatSync, realpathSync } from 'node:fs';
 import { delimiter, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isPrivateFileMode, toWslPath } from './wsl.mjs';
 
 export const DEFAULT_MODELS = ['sonnet', 'opus', 'haiku']; // official CLI aliases, not an account entitlement list
 const runner = fileURLToPath(new URL('../scripts/first-connect-runner.mjs', import.meta.url));
@@ -13,9 +14,12 @@ export const shellQuote = s => "'" + String(s).replaceAll("'", "'\\''") + "'";
 
 export function privatePath(path, home) {
   const target = resolve(path);
-  if (!target.startsWith(realpathSync(home) + sep)) throw new Error('Setup state must be inside the user home');
-  let part = sep;
-  for (const component of target.split(sep).filter(Boolean)) {
+  const realHome = realpathSync(home);
+  if (!target.startsWith(realHome + sep)) throw new Error('Setup state must be inside the user home');
+  const m = target.match(/^[A-Za-z]:\\/);
+  let part = m ? m[0] : sep;
+  const rest = m ? target.slice(m[0].length) : target;
+  for (const component of rest.split(sep).filter(Boolean)) {
     part = join(part, component);
     try {
       const st = lstatSync(part);
@@ -56,6 +60,15 @@ export async function launchTerminal(command, env, { os = process.platform, find
     // JSON string syntax is also valid for this AppleScript string literal;
     // shell metacharacters live inside individually quoted argv below.
     args = ['-e', 'tell application "Terminal"', '-e', 'activate', '-e', `do script ${JSON.stringify(command)}`, '-e', 'end tell'];
+  } else if (os === 'win32') {
+    const wt = await find('wt.exe', env);
+    if (wt) {
+      executable = wt;
+      args = ['new-tab', 'wsl.exe', '--', '/bin/sh', '-lc', command];
+    } else {
+      executable = 'cmd.exe';
+      args = ['/c', 'start', '""', 'wsl.exe', '--', '/bin/sh', '-lc', command];
+    }
   } else if (os === 'linux' && (env.DISPLAY || env.WAYLAND_DISPLAY)) {
     for (const [name, prefix] of [['x-terminal-emulator', ['-e']], ['gnome-terminal', ['--']], ['konsole', ['-e']], ['xfce4-terminal', ['-x']], ['xterm', ['-e']]]) {
       executable = await find(name, env);
@@ -76,9 +89,16 @@ export async function launchTerminal(command, env, { os = process.platform, find
   return true;
 }
 
-export async function beginFirstConnect({ home, stateRoot, env, terminal = launchTerminal, timeoutMs = 9 * 60 * 1000, pollMs = 300, now = Date.now }) {
+export async function beginFirstConnect({ home, stateRoot, env, os = process.platform, wslDeps, terminal = launchTerminal, timeoutMs = 9 * 60 * 1000, pollMs = 300, now = Date.now }) {
   const clean = setupEnvironment(env, home);
-  if (!await findExecutable('claude', clean)) throw new Error('未找到 Claude Code。请先安装官方 Claude Code，再重新连接。');
+  let wslInfo = null;
+  if (os === 'win32') {
+    wslInfo = wslDeps ? await wslDeps() : null;
+    if (wslInfo && !wslInfo.claude) throw new Error('未在 WSL2 中找到 Claude Code。请先在 WSL2 终端安装官方 Claude Code，再重新连接。');
+    if (wslInfo && !(wslInfo.bun || wslInfo.node)) throw new Error('未在 WSL2 中找到 bun 或 node。请先在 WSL2 终端安装 bun 或 Node.js >= 18，再重新连接。');
+  } else if (!await findExecutable('claude', clean)) {
+    throw new Error('未找到 Claude Code。请先安装官方 Claude Code，再重新连接。');
+  }
   const session = join(stateRoot, 'setup', randomBytes(16).toString('hex'));
   await privateDirectory(session, home);
   const configFile = join(session, 'setup.json');
@@ -86,17 +106,40 @@ export async function beginFirstConnect({ home, stateRoot, env, terminal = launc
   const heartbeat = join(session, 'heartbeat');
   const cancelFile = join(session, 'cancel');
   const profile = join(session, 'claude');
-  const config = { v: 1, home, profile, resultFile, heartbeat, cancelFile, environment: clean, deadline: now() + timeoutMs };
+  const isWin = os === 'win32';
+  const targetHome = isWin ? toWslPath(home) : home;
+  const targetSession = isWin ? toWslPath(session) : session;
+  const targetConfigFile = isWin ? `${targetSession}/setup.json` : configFile;
+  const targetProfile = isWin ? `${targetSession}/claude` : profile;
+  const targetEnv = isWin
+    ? { ...clean, HOME: targetHome, PATH: '$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin' }
+    : clean;
+  const config = {
+    v: 1,
+    home: targetHome,
+    profile: targetProfile,
+    resultFile: isWin ? `${targetSession}/result.json` : resultFile,
+    heartbeat: isWin ? `${targetSession}/heartbeat` : heartbeat,
+    cancelFile: isWin ? `${targetSession}/cancel` : cancelFile,
+    environment: targetEnv,
+    deadline: now() + timeoutMs,
+  };
   await writeFile(configFile, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
   await writeFile(heartbeat, '', { mode: 0o600, flag: 'wx' });
   // The launched terminal inherits the user's shell; scrub its environment
   // again with env -i. Proxy/certificate values stay in the private config,
   // never in terminal command text or process argv.
-  const prefix = ['/usr/bin/env', '-i', `HOME=${home}`, `PATH=${clean.PATH}`, process.execPath];
-  let command = [...prefix, runner, configFile].map(shellQuote).join(' ');
+  const targetRunner = isWin ? toWslPath(runner) : runner;
+  const targetSshLogin = isWin ? toWslPath(fileURLToPath(new URL('../scripts/ssh-login.mjs', import.meta.url))) : fileURLToPath(new URL('../scripts/ssh-login.mjs', import.meta.url));
+  const targetExec = isWin ? (wslInfo?.bun || wslInfo?.node || 'bun') : process.execPath;
+  const prefix = ['/usr/bin/env', '-i', `HOME=${targetHome}`, `PATH=${isWin ? '/usr/local/bin:/usr/bin:/bin' : clean.PATH}`, targetExec];
+  let command = [...prefix, targetRunner, targetConfigFile].map(shellQuote).join(' ');
   let opened = false;
-  try { opened = await terminal(command, clean); } catch { /* Display a manual fallback instead of losing the flow. */ }
-  if (!opened) command = [...prefix, fileURLToPath(new URL('../scripts/ssh-login.mjs', import.meta.url)), configFile, 'start'].map(shellQuote).join(' ');
+  try { opened = await terminal(command, clean, { os }); } catch { /* Display a manual fallback instead of losing the flow. */ }
+  if (!opened) {
+    const inner = [...prefix, targetSshLogin, targetConfigFile, 'start'].map(shellQuote).join(' ');
+    command = isWin ? `wsl.exe -- /bin/sh -lc ${shellQuote(inner)}` : inner;
+  }
   let settled = false;
   const pulse = setInterval(() => writeFile(heartbeat, '', { mode: 0o600 }).catch(() => {}), 2000);
   pulse.unref?.();
@@ -107,9 +150,9 @@ export async function beginFirstConnect({ home, stateRoot, env, terminal = launc
       while (now() < config.deadline) {
         try {
           const st = lstatSync(resultFile);
-          if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o777) !== 0o600) throw new Error('Invalid private setup result');
+          if (!st.isFile() || st.isSymbolicLink() || !isPrivateFileMode(st.mode, os)) throw new Error('Invalid private setup result');
           const result = JSON.parse(await readFile(resultFile, 'utf8'));
-          if (result.v !== 1 || result.profile !== profile) throw new Error('Setup result did not match this sign-in');
+          if (result.v !== 1 || (result.profile !== profile && result.profile !== targetProfile)) throw new Error('Setup result did not match this sign-in');
           if (!result.ok) throw new Error(result.error || 'Claude 登录未完成，请重新连接。');
           return { profile, models: [...DEFAULT_MODELS] };
         } catch (e) { if (e.code !== 'ENOENT') throw e; }

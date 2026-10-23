@@ -11,7 +11,7 @@ Persistent sessions, streamed responses and MCP tool handoffs—without modifyin
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Guuuu233/claude-tui-boost)](https://github.com/Guuuu233/claude-tui-boost/releases/latest)
-[![macOS / Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](COMPATIBILITY.md)
+[![macOS / Linux / Windows WSL2](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL2)-lightgrey)](COMPATIBILITY.md)
 
 </div>
 
@@ -53,9 +53,9 @@ Magpie-compatible Agent / SDK client
 
 ## Quick start
 
-**Requirements:** Magpie with GitHub plugin support; official Claude Code CLI **2.1.268+**; macOS or Linux (arm64/x64). The login flow can prepare tmux; Bun comes from the Magpie host. Native Windows is not supported. Install on the **machine running Magpie and Claude Code** (including a VPS), not just on a remote client.
+**Requirements:** Magpie with GitHub plugin support; official Claude Code CLI **2.1.268+**; macOS, Linux (arm64/x64), or Windows with WSL2 (having `bun`, `tmux` and `claude` inside the default WSL2 distribution). The login flow can prepare tmux; on Windows, the plugin automatically bridges into WSL2 via `wsl.exe`. Install on the **machine running Magpie and Claude Code** (including a VPS), not just on a remote client.
 
-**1. Install** (current release: [v0.2.14](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.14)):
+**1. Install** (current release: [v0.2.15](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.15)):
 
 ```sh
 magpie plugin add github:Guuuu233/claude-tui-boost
@@ -82,7 +82,7 @@ The main branch is kept at the latest published release, so Magpie shows an upda
 | [Technical reference](TECHNICAL_REFERENCE.md) | Advanced configuration, exact security effects, tests and builds |
 | [Release notes](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md) | What's new and what remains experimental |
 
-**Current release:** `v0.2.14` accepts requests up to 32 MiB (long, image-heavy conversations) and answers larger ones with 413 rather than a retried 502. `v0.2.13` replays a completed tool reply only for the very same request and answers an exhausted Claude allowance with 429 instead of 502. Since `v0.2.12` each conversation is served from its own history: an interrupted or rewritten conversation is rebuilt rather than refused. Tool-replay boundaries in long, complex sessions remain experimental; see [release notes](RELEASE_NOTES.md).
+**Current release:** `v0.2.15` adds Windows (WSL2) automatic bridge support for Windows Magpie hosts. `v0.2.14` accepts requests up to 32 MiB (long, image-heavy conversations) and answers larger ones with 413 rather than a retried 502. `v0.2.13` replays a completed tool reply only for the very same request and answers an exhausted Claude allowance with 429 instead of 502. Since `v0.2.12` each conversation is served from its own history: an interrupted or rewritten conversation is rebuilt rather than refused. Tool-replay boundaries in long, complex sessions remain experimental; see [release notes](RELEASE_NOTES.md).
 
 ## Contribute
 

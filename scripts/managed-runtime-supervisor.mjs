@@ -28,10 +28,36 @@
 import { spawn } from "node:child_process";
 import { runtimeEnvironment } from "../src/runtime-environment.mjs";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 const sha256 = v => createHash("sha256").update(v).digest("hex");
+
+function stageDrvFsExecutable(p) {
+  if (!p || !p.startsWith("/mnt/")) return p;
+  try {
+    const baseName = basename(p);
+    if (baseName === "magpie-tui-bridge") {
+      const pkgDir = dirname(dirname(p));
+      const cliPath = join(pkgDir, "vendor", "claude-bridge-magpie", "src", "cli.ts").replaceAll("'", "'\\''");
+      const binDir = join(process.env.HOME || homedir(), ".cache", "magpie-claude-tui", "bin");
+      mkdirSync(binDir, { recursive: true, mode: 0o700 });
+      const dst = join(binDir, `${sha256(p).slice(0, 12)}-magpie-tui-bridge`);
+      writeFileSync(dst, `#!/bin/sh\nexec bun '${cliPath}' "$@"\n`, { mode: 0o700 });
+      chmodSync(dst, 0o700);
+      return dst;
+    }
+    const binDir = join(process.env.HOME || homedir(), ".cache", "magpie-claude-tui", "bin");
+    mkdirSync(binDir, { recursive: true, mode: 0o700 });
+    const dst = join(binDir, `${sha256(p).slice(0, 12)}-${baseName}`);
+    copyFileSync(p, dst);
+    chmodSync(dst, 0o700);
+    return dst;
+  } catch {
+    return p;
+  }
+}
 
 const argv = process.argv.slice(2);
 const opt = name => {
@@ -51,8 +77,10 @@ const die = message => {
 
 function checkNoSymlinkComponents(path, finalKind = "any") {
   const target = resolve(path);
-  let current = sep;
-  for (const component of target.split(sep).filter(Boolean)) {
+  const m = target.match(/^[A-Za-z]:\\/);
+  let current = m ? m[0] : sep;
+  const rest = m ? target.slice(m[0].length) : target;
+  for (const component of rest.split(sep).filter(Boolean)) {
     current = join(current, component);
     let st;
     try { st = lstatSync(current); } catch (error) {
@@ -197,13 +225,32 @@ for (const keep of ["PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR
 }
 
 
-const child = spawn(runtime, [
+const effectiveRuntimeArgs = [...runtimeArgs];
+for (let i = 0; i < effectiveRuntimeArgs.length - 1; i++) {
+  if (effectiveRuntimeArgs[i] === "--helper" || effectiveRuntimeArgs[i] === "--bridge") {
+    effectiveRuntimeArgs[i + 1] = stageDrvFsExecutable(effectiveRuntimeArgs[i + 1]);
+  }
+}
+
+let runtimeKeyFile = keyFile;
+let runtimeStateDir = stateDir;
+if (stateDir.startsWith("/mnt/")) {
+  const extRoot = join(process.env.HOME || homedir(), ".cache", "magpie-claude-tui", "drvfs", sha256(stateDir).slice(0, 16));
+  runtimeStateDir = join(extRoot, "state");
+  mkdirSync(runtimeStateDir, { recursive: true, mode: 0o700 });
+  if (managedKey) {
+    runtimeKeyFile = join(extRoot, "key");
+    writePrivateAtomic(runtimeKeyFile, managedKey);
+  }
+}
+
+const child = spawn(stageDrvFsExecutable(runtime), [
   "--serve",
   "--port-file", portFile,
-  "--key-file", keyFile,
+  "--key-file", runtimeKeyFile,
   "--models-file", modelsFile,
-  "--state-dir", stateDir,
-  ...runtimeArgs,
+  "--state-dir", runtimeStateDir,
+  ...effectiveRuntimeArgs,
 ], {
   env,
   stdio: ["ignore", "inherit", "inherit"],
