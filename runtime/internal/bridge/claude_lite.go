@@ -100,8 +100,18 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 	}
 	// The exact continuation of a live run — its tool results, perhaps with
 	// what the user said meanwhile — goes on in that native session.
-	if run, results, how := rt.bridge.match(req); run != nil && liteContinues(owner, model, req, run, results, how) {
+	live, results, how := rt.bridge.match(req)
+	if live != nil && liteContinues(owner, model, req, live, results, how) {
 		return upstream()
+	}
+	if live != nil && outerSession == "" {
+		// The run waits on the very results this request carries, but the
+		// request does not continue it (the client changed what it had sent
+		// it): the session rebuilt below answers them, and nothing ever will
+		// send them to the run. A stateless run has no next turn of its
+		// conversation to stop it (takeLiteTurn); it would hold its process
+		// for interactiveParkLongest.
+		rt.bridge.letGoSuperseded(live)
 	}
 	if outerSession != "" {
 		if err := rt.bridge.verifyInteractiveSessionStore(); err != nil {
@@ -315,6 +325,20 @@ func (b *subscriptionBridge) liteCanonical(owner, outerSession, model string, re
 		}
 	}
 	return true
+}
+
+// letGoSuperseded stops r, a run whose tool results were taken by a
+// rebuilt session, unless it is still answering: only a run parked on its
+// calls, or done, is stopped. abort waits on the wrapper's own teardown, so
+// it is not done on the request's way.
+func (b *subscriptionBridge) letGoSuperseded(r *subscriptionRun) {
+	r.mu.Lock()
+	idle := !r.closed && (r.terminalDelivered || !r.parkedAt.IsZero())
+	r.mu.Unlock()
+	if idle {
+		log.Printf("Claude interactive stopped a stateless run whose tool results a rebuilt session answers")
+		go r.abort()
+	}
 }
 
 // takeLiteTurn makes this request the conversation's only turn. A turn still

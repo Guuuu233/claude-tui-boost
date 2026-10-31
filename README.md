@@ -55,7 +55,7 @@ Magpie-compatible Agent / SDK client
 
 **Requirements:** Magpie with GitHub plugin support; official Claude Code CLI **2.1.268+**; macOS, Linux (arm64/x64), or Windows with WSL2 (having `bun`, `tmux` and `claude` inside the default WSL2 distribution). The login flow can prepare tmux; on Windows, the plugin automatically bridges into WSL2 via `wsl.exe`. Install on the **machine running Magpie and Claude Code** (including a VPS), not just on a remote client.
 
-**1. Install** (current release: [v0.2.16](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.16)):
+**1. Install** (current release: [v0.2.17](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.17)):
 
 ```sh
 magpie plugin add github:Guuuu233/claude-tui-boost
@@ -82,7 +82,7 @@ The main branch is kept at the latest published release, so Magpie shows an upda
 | [Technical reference](TECHNICAL_REFERENCE.md) | Advanced configuration, exact security effects, tests and builds |
 | [Release notes](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md) | What's new and what remains experimental |
 
-**Current release:** `v0.2.16` adds `win32` to `package.json#os` so npm/Bun on Windows installs the plugin without `--force` and refreshes documentation across all guides (`v0.2.15` added the Windows WSL2 automatic bridge). `v0.2.14` accepts requests up to 32 MiB (long, image-heavy conversations) and answers larger ones with 413 rather than a retried 502. `v0.2.13` replays a completed tool reply only for the very same request and answers an exhausted Claude allowance with 429 instead of 502. Since `v0.2.12` each conversation is served from its own history: an interrupted or rewritten conversation is rebuilt rather than refused. Tool-replay boundaries in long, complex sessions remain experimental; see [release notes](RELEASE_NOTES.md).
+**Current release:** `v0.2.17` adds 1-hour prompt-cache breakpoints on rebuilt sessions, automatic stale supervisor lock recovery after host reboot, and `/usr/sbin/nologin` service-account compatibility (#21, #22, #23). `v0.2.16` adds `win32` to `package.json#os` so npm/Bun on Windows installs the plugin without `--force` and refreshes documentation across all guides (`v0.2.15` added the Windows WSL2 automatic bridge). `v0.2.14` accepts requests up to 32 MiB (long, image-heavy conversations) and answers larger ones with 413 rather than a retried 502. `v0.2.13` replays a completed tool reply only for the very same request and answers an exhausted Claude allowance with 429 instead of 502. Since `v0.2.12` each conversation is served from its own history: an interrupted or rewritten conversation is rebuilt rather than refused. Tool-replay boundaries in long, complex sessions remain experimental; see [release notes](RELEASE_NOTES.md).
 
 ## Contribute
 

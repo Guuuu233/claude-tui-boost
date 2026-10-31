@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.17 — prompt-cache breakpoint on rebuilt sessions, stale supervisor lock recovery, and nologin tmux launch (#21, #22, #23) (2026-10-31)
+
+- **Prompt-cache mark on rebuilt transcripts (#23, thanks @AlgernonYin):** Rebuilt sessions (`liteSeed` → `writeClaudeTranscript`) now place one `cache_control: {type: "ephemeral", ttl: "1h"}` breakpoint on the last eligible client block (stepping at most 18 positions past a remembered mark so it stays within Anthropic's 20-block lookback window). Automatically disables marking if Anthropic ever rejects a `cache_control` block count; `MAGPIE_CLAUDE_REBUILD_CACHE_MARK=0` turns it off explicitly.
+- **Release superseded stateless runs (#23, thanks @AlgernonYin):** When a stateless request carries tool results that a parked run is waiting on but does not continue that run, the superseded parked run is aborted in the background immediately instead of holding its process until `interactiveParkLongest`.
+- **Recover stale `.managed-live` supervisor lock after host reboot/crash (#22, thanks @AlgernonYin):** `managed-runtime-supervisor.mjs` records the OS boot ID alongside `<pid> <timestamp>` and reclaims an existing `.managed-live` file when the claiming process is proven dead (`ESRCH` or a previous Linux `boot_id`), while still refusing live or ambiguous claims.
+- **Explicit `/bin/sh -c` for `tmux new-session` (#21, thanks @AlgernonYin):** Pass `"/bin/sh", "-c", launchCommand` as separate arguments to `tmux new-session` so tmux uses its `execvp()` path rather than the service account's passwd login shell (fixing immediate exit under `/usr/sbin/nologin`).
+
 ## 0.2.16 — allow win32 in package.json os field and sync documentation (2026-10-23)
 
 - Add `win32` to `package.json#os` (`["darwin", "linux", "win32"]`) so npm/Bun on Windows does not reject plugin installation with `EBADPLATFORM`.

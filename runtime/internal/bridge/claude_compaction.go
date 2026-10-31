@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -73,8 +74,9 @@ func writeCompactionTranscript(work, configDir string, req *Request) (string, st
 // writeClaudeTranscript saves history as a Claude Code session work's runs
 // can --resume: an optional user preface, the messages (tool calls named
 // toolPrefix+name, as the session's own MCP tools are), and an optional
-// closing assistant line. It returns the session id and the file's path.
-func writeClaudeTranscript(work, configDir, model string, preface []map[string]any, history []Message, toolPrefix, closing string) (string, string, error) {
+// closing assistant line, with the blocks of marks marked for the prompt
+// cache. It returns the session id and the file's path.
+func writeClaudeTranscript(work, configDir, model string, preface []map[string]any, history []Message, toolPrefix, closing string, marks ...transcriptMark) (string, string, error) {
 	id := randomToken()[:32]
 	id = id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-a" + id[17:20] + "-" + id[20:]
 	dirs := claudeSessions(configDir, work)
@@ -87,7 +89,7 @@ func writeClaudeTranscript(work, configDir, model string, preface []map[string]a
 		return "", "", err
 	}
 	defer f.Close()
-	if err := appendClaudeTranscript(f, id, "", work, model, preface, history, toolPrefix, closing); err != nil {
+	if err := appendClaudeTranscript(f, id, "", work, model, preface, history, toolPrefix, closing, marks...); err != nil {
 		return "", path, err
 	}
 	return id, path, nil
@@ -95,7 +97,7 @@ func writeClaudeTranscript(work, configDir, model string, preface []map[string]a
 
 // appendClaudeTranscript writes history (after preface, before closing) to
 // f as rows of session id, the first a child of parent ("" for none).
-func appendClaudeTranscript(f *os.File, id, parent, work, model string, preface []map[string]any, history []Message, toolPrefix, closing string) error {
+func appendClaudeTranscript(f *os.File, id, parent, work, model string, preface []map[string]any, history []Message, toolPrefix, closing string, marks ...transcriptMark) error {
 	write := func(role string, blocks []map[string]any) error {
 		uuid := randomToken()[:32]
 		row := map[string]any{"type": role, "uuid": uuid, "parentUuid": nil, "sessionId": id, "cwd": work, "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "version": "2.1.300", "isSidechain": false, "userType": "external", "message": map[string]any{"role": role, "content": blocks}}
@@ -119,25 +121,17 @@ func appendClaudeTranscript(f *os.File, id, parent, work, model string, preface 
 			return err
 		}
 	}
-	for _, m := range history {
+	for i, m := range history {
 		var blocks []map[string]any
-		for _, p := range m.Parts {
-			switch p.Kind {
-			case Text:
-				blocks = append(blocks, map[string]any{"type": "text", "text": p.Text})
-			case ToolCall:
-				blocks = append(blocks, map[string]any{"type": "tool_use", "id": p.ID, "name": toolPrefix + p.Name, "input": p.Args})
-			case ToolResult:
-				content := []map[string]any{{"type": "text", "text": p.Text}}
-				for _, im := range p.Images {
-					content = append(content, compactionImageBlock(im))
-				}
-				blocks = append(blocks, map[string]any{"type": "tool_result", "tool_use_id": p.CallID, "content": content, "is_error": p.IsError})
-			case Image:
-				blocks = append(blocks, compactionImageBlock(p))
-			case File:
-				blocks = append(blocks, map[string]any{"type": "text", "text": attachmentText(p)})
+		for j, p := range m.Parts {
+			b, ok := transcriptBlock(p, toolPrefix)
+			if !ok {
+				continue
 			}
+			if slices.Contains(marks, transcriptMark{i, j}) {
+				b["cache_control"] = map[string]any{"type": "ephemeral", "ttl": "1h"}
+			}
+			blocks = append(blocks, b)
 		}
 		if len(blocks) == 0 {
 			continue
@@ -157,6 +151,29 @@ func appendClaudeTranscript(f *os.File, id, parent, work, model string, preface 
 	}
 	return f.Sync()
 }
+
+// transcriptBlock is the Claude Code content block a transcript holds for p,
+// or false for a part it leaves out.
+func transcriptBlock(p Part, toolPrefix string) (map[string]any, bool) {
+	switch p.Kind {
+	case Text:
+		return map[string]any{"type": "text", "text": p.Text}, true
+	case ToolCall:
+		return map[string]any{"type": "tool_use", "id": p.ID, "name": toolPrefix + p.Name, "input": p.Args}, true
+	case ToolResult:
+		content := []map[string]any{{"type": "text", "text": p.Text}}
+		for _, im := range p.Images {
+			content = append(content, compactionImageBlock(im))
+		}
+		return map[string]any{"type": "tool_result", "tool_use_id": p.CallID, "content": content, "is_error": p.IsError}, true
+	case Image:
+		return compactionImageBlock(p), true
+	case File:
+		return map[string]any{"type": "text", "text": attachmentText(p)}, true
+	}
+	return nil, false
+}
+
 func compactionImageBlock(p Part) map[string]any {
 	source := map[string]any{"type": "base64", "media_type": p.MediaType, "data": p.Data}
 	if p.URL != "" {
