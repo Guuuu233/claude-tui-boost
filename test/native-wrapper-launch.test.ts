@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, chmodSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildClaudeLaunchCommand, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "../vendor/claude-bridge-magpie/src/launch-command.ts";
+import { buildClaudeLaunchCommand, buildTmuxNewSessionArgs, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "../vendor/claude-bridge-magpie/src/launch-command.ts";
 
 test("real tmux launch command forces plugin-owned MCP callback to remain foreground", () => {
   const root = mkdtempSync(join(tmpdir(), "magpie-wrapper-launch-"));
@@ -37,7 +37,11 @@ test("actual vendored Claude wrapper uses the foreground MCP environment builder
   expect(source).toContain("...nativeAutoCompactionLaunchEnv(process.env).envArgs");
   expect(source).toContain("...nativeAutoCompactionLaunchEnv(process.env).unsetEnvArgs");
   expect(source).toContain("buildClaudeLaunchCommand({");
+  expect(source).toContain("buildTmuxNewSessionArgs({");
   expect(interactiveMcpBackgroundEnvArgs()).toContain("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0");
+  expect(buildTmuxNewSessionArgs({ sessionName: "s1", cwd: "/tmp", command: "echo ok" })).toEqual([
+    "new-session", "-d", "-s", "s1", "-x", "220", "-y", "50", "-c", "/tmp", "/bin/sh", "-c", "echo ok",
+  ]);
 });
 
 test("real native child receives client-owned auto-compaction setting even with stale tmux environment", () => {

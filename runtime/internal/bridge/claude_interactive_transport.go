@@ -1376,6 +1376,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	// earlier native state of it to mark dirty, and it becomes the checkpoint
 	// only by completing.
 	seeded := req.resumedCopy
+	cacheMarked := false
 	if readOnly && len(req.compactHistory) > 0 {
 		var seedPath string
 		resumeID, seedPath, err = writeCompactionTranscript(work, configDir, req)
@@ -1390,7 +1391,12 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	} else if len(req.seedHistory) > 0 && resumeID == "" {
 		seeded = true
 		var seedPath string
-		resumeID, seedPath, err = writeClaudeTranscript(work, configDir, model, nil, req.seedHistory, "mcp__magpie__", "")
+		var marks []transcriptMark
+		if mark, ok := rebuildCacheMark(rebuildMarkContext(owner, model, req, toolBytes), req.seedHistory, "mcp__magpie__"); ok {
+			marks = append(marks, mark)
+		}
+		cacheMarked = len(marks) > 0
+		resumeID, seedPath, err = writeClaudeTranscript(work, configDir, model, nil, req.seedHistory, "mcp__magpie__", "", marks...)
 		if err != nil {
 			clean()
 			if seedPath != "" {
@@ -1504,7 +1510,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 		}(),
 		outerSession: outerSession, threadKey: firstWords(req), sessionID: resumeID, images: images,
 		searchName: req.SearchTool, schema: len(req.Schema) > 0, readOnlyRecovery: readOnly,
-		safeguards: bytes.Clone(req.Safeguards), safeguardBeta: req.SafeguardBeta}
+		safeguards: bytes.Clone(req.Safeguards), safeguardBeta: req.SafeguardBeta, cacheMarked: cacheMarked}
 	if b.toolJournal != nil && os.Getenv("MAGPIE_CLAUDE_FIRST_TURN_ANCHOR") == "1" &&
 		outerSession != "" && resumeID == "" && !readOnly && len(req.Messages) == 1 && req.Messages[0].Role == "user" {
 		// conversationKeys deliberately emits keys only at *assistant*
@@ -1768,6 +1774,9 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 			if msg.IsAPIErrorMessage || (msg.Message.Model == "<synthetic>" && strings.HasPrefix(strings.TrimSpace(apiErrorText), "API Error:")) {
 				if apiErrorText == "" {
 					apiErrorText = "Claude Code reported an upstream API error"
+				}
+				if r.cacheMarked {
+					noteRebuildMarkRefused(apiErrorText)
 				}
 				status, code := http.StatusBadGateway, "upstream_api_error"
 				if msg.IsAPIErrorMessage {

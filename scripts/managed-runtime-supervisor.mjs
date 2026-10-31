@@ -29,10 +29,37 @@ import { spawn } from "node:child_process";
 import { runtimeEnvironment } from "../src/runtime-environment.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, uptime } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 const sha256 = v => createHash("sha256").update(v).digest("hex");
+
+function readLinuxBootId() {
+  try { return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); } catch { return ""; }
+}
+
+function isProcessDead(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (e) { return e?.code === "ESRCH"; }
+}
+
+// A .managed-live claim left behind by an unclean reboot or SIGKILLed
+// supervisor is safe to reclaim only when we can prove the claiming supervisor
+// is gone (either a different Linux boot_id, a timestamp older than the
+// current OS boot, or an ESRCH non-existent PID). Live or EPERM PIDs are
+// never reclaimed.
+function isStaleSupervisorClaim(raw, bootId = readLinuxBootId()) {
+  const parts = String(raw ?? "").trim().split(/\s+/);
+  const pid = Number(parts[0]);
+  const ts = Number(parts[1]);
+  const claimBoot = parts[2] || "";
+  if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isFinite(ts) || ts <= 0) return false;
+  if (bootId && claimBoot && claimBoot !== bootId) return true;
+  const bootTimeMs = Date.now() - uptime() * 1000;
+  if (ts < bootTimeMs - 5000 && isProcessDead(pid)) return true;
+  return isProcessDead(pid);
+}
 
 function stageDrvFsExecutable(p) {
   if (!p || !p.startsWith("/mnt/")) return p;
@@ -170,16 +197,28 @@ try { chmodSync(stateDir, 0o700); }
 catch (error) { die(`owned state-dir permissions could not be secured: ${error.message}`); }
 // Exclusive live claim across host processes: a second supervisor on the
 // same state must refuse, never double-spawn over the first's port/key or
-// remove its ready marker. The claim is atomic (O_EXCL); a stale file is
-// refused, not stolen. Released only when OUR runtime child exits.
-const claimId = `${process.pid} ${Date.now()}`;
+// remove its ready marker. The claim is atomic (O_EXCL); a claim proven to
+// belong to a dead process or previous OS boot is reclaimed, while any live
+// or ambiguous claim is refused. Released when OUR runtime child exits.
+const bootId = readLinuxBootId();
+const claimId = `${process.pid} ${Date.now()}${bootId ? " " + bootId : ""}`;
 try {
   assertNoSymlinkComponents(liveFile, "file");
   writeFileSync(liveFile, claimId + "\n", { flag: "wx", mode: 0o600 });
 } catch {
   let prior = "";
   try { prior = readFileSync(liveFile, "utf8").trim(); } catch {}
-  die(`state-dir ${stateDir} already has a live supervisor claim (${prior || "unreadable"}); refusing to double-start`);
+  if (prior && isStaleSupervisorClaim(prior, bootId)) {
+    try {
+      assertNoSymlinkComponents(liveFile, "file");
+      rmSync(liveFile, { force: true });
+      writeFileSync(liveFile, claimId + "\n", { flag: "wx", mode: 0o600 });
+    } catch {
+      die(`state-dir ${stateDir} already has a live supervisor claim (${prior || "unreadable"}); refusing to double-start`);
+    }
+  } else {
+    die(`state-dir ${stateDir} already has a live supervisor claim (${prior || "unreadable"}); refusing to double-start`);
+  }
 }
 const release = () => { try { if (readFileSync(liveFile, "utf8").trim() === claimId) rmSync(liveFile, { force: true }); } catch {} };
 process.once("exit", release);

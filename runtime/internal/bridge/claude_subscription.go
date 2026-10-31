@@ -248,6 +248,9 @@ type subscriptionRun struct {
 	// readOnlySignaled records that such a signal arrived (mu-held).
 	readOnlyRecovery bool
 	readOnlySignaled bool
+	// cacheMarked says its rebuilt transcript carries a prompt-cache mark of
+	// the runtime's own (claude_cache_mark.go). Set before the run starts.
+	cacheMarked bool
 	// terminalDelivered records the narrow terminal state a canonical PTY
 	// run reaches only when ended() both delivered a complete non-tool
 	// reply (stop == "stop", ok, no read-only tool signal) AND saved the

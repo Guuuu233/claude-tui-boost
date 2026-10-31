@@ -56,7 +56,7 @@ import {
 import { makePrintErrorResult } from "./print-result.ts";
 import { runJsonSchemaStopHook, runRuntimeHook } from "./stop-hook.ts";
 import { NativeApiErrorTurn, type NativeApiFailure } from "./native-api-error.ts";
-import { buildClaudeLaunchCommand, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "./launch-command.ts";
+import { buildClaudeLaunchCommand, buildTmuxNewSessionArgs, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "./launch-command.ts";
 import { writeNativeTmuxGuard } from "./native-tmux-guard.ts";
 import {
   apiErrorStatusFromRow,
@@ -704,19 +704,11 @@ function startTmux(): void {
     claudeArgs,
     bypassPermissions,
   });
-  const newSession = [
-    "new-session",
-    "-d",
-    "-s",
+  const newSession = buildTmuxNewSessionArgs({
     sessionName,
-    "-x",
-    "220",
-    "-y",
-    "50",
-    "-c",
-    targetCwd,
-    launchCommand,
-  ];
+    cwd: targetCwd,
+    command: launchCommand,
+  });
   const res = spawnSync(tmuxPath, newSession, { stdio: "inherit" });
   if (res.status !== 0) {
     process.stderr.write(`[claude-bridge] tmux new-session exited ${res.status}\n`);

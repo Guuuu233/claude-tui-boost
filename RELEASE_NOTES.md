@@ -1,3 +1,16 @@
+# v0.2.17 — prompt-cache breakpoint on rebuilt sessions, reboot lock recovery, and nologin tmux fix (#21, #22, #23)
+
+Thanks to @AlgernonYin for detailed production diagnostics, root-cause analysis and patches across [#21](https://github.com/Guuuu233/claude-tui-boost/issues/21), [#22](https://github.com/Guuuu233/claude-tui-boost/issues/22) and [#23](https://github.com/Guuuu233/claude-tui-boost/issues/23):
+
+- **Rebuilt session prompt-cache breakpoint (#23):** When the Runtime rebuilds a native session from the request (`liteSeed` → `writeClaudeTranscript`, e.g. stateless clients or rewritten histories), it now marks one content block with `cache_control: {type: "ephemeral", ttl: "1h"}` on the last eligible client block (stepping at most 18 positions past a remembered mark to stay within Anthropic's 20-block lookback). This prevents every rebuild from re-writing the entire conversation to the 1-hour cache. Automatically stops marking if upstream ever rejects `cache_control` count; `MAGPIE_CLAUDE_REBUILD_CACHE_MARK=0` disables it.
+- **Release superseded stateless parked runs (#23):** A stateless run parked on tool calls whose results arrive in a rewritten request that triggers a rebuild is now aborted immediately in the background instead of lingering for the 5-minute park window.
+- **Recover stale `.managed-live` lock after reboot (#22):** `scripts/managed-runtime-supervisor.mjs` now checks whether an existing `.managed-live` claim belongs to a dead PID (`ESRCH`) or a previous Linux `boot_id`, reclaiming proven-dead locks after an unclean host reboot while continuing to refuse live concurrent supervisors.
+- **Service accounts with `/usr/sbin/nologin` (#21):** `vendor/claude-bridge-magpie` now invokes `tmux new-session` with explicit `"/bin/sh", "-c", launchCommand` arguments so `tmux` takes its `execvp()` path instead of invoking the user's passwd login shell.
+
+Verification: 85/85 Bun tests, full Go test/vet suite including 13 new cache-mark and stateless-supersede tests, supervisor stale-claim recovery test, and byte-identical rebuilds of all eight Runtime/Helper binaries verified by `scripts/verify-source-binaries.sh`.
+
+## Previous release
+
 # v0.2.16 — allow `win32` in `package.json#os` and synchronize documentation
 
 - **`package.json#os` includes `win32`:** `v0.2.15` added the Windows (WSL2) runtime bridge, but `package.json` still listed `"os": ["darwin", "linux"]`, which can cause npm/Bun on Windows to reject installation with `EBADPLATFORM`. `win32` is now included alongside `darwin` and `linux`.
