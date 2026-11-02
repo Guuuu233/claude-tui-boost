@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.18 — verify lite restore prefix before resuming and preserve replacement liveOuter ownership (#27, #28) (2026-11-03)
+
+- **Verify prefix on lite cold-start restore (#27, thanks @AlgernonYin):** `startLite` now resumes a saved native session only when the checkpoint's conversation hash (`ConvKey`) verifies against the request (`interactiveRestoreExact`, or `interactiveRestoreCompanion` with a verified `ConvKey` prefix). Anchor-only matches where the client modified or replaced messages before the last assistant reply now fall through to `liteSeed` and rebuild from the request instead of resurrecting replaced native history.
+- **Preserve replacement `liveOuter` ownership when a prior run finishes (#28, thanks @AlgernonYin):** `subscriptionBridge.removeRun` now deletes `b.liveOuter[key]` only when `b.liveOuter[key] == run`, preventing a late-finishing superseded run from clearing its active replacement's outer-session slot.
+
 ## 0.2.17 — prompt-cache breakpoint on rebuilt sessions, stale supervisor lock recovery, and nologin tmux launch (#21, #22, #23) (2026-10-31)
 
 - **Prompt-cache mark on rebuilt transcripts (#23, thanks @AlgernonYin):** Rebuilt sessions (`liteSeed` → `writeClaudeTranscript`) now place one `cache_control: {type: "ephemeral", ttl: "1h"}` breakpoint on the last eligible client block (stepping at most 18 positions past a remembered mark so it stays within Anthropic's 20-block lookback window). Automatically disables marking if Anthropic ever rejects a `cache_control` block count; `MAGPIE_CLAUDE_REBUILD_CACHE_MARK=0` turns it off explicitly.

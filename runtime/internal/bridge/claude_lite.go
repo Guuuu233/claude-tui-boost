@@ -375,6 +375,20 @@ func (b *subscriptionBridge) takeLiteTurn(ctx context.Context, owner, outerSessi
 	}
 }
 
+// liteRestoreVerifiedPrefix reports whether a restored checkpoint has a
+// verified conversation prefix against req (rather than an anchor-only match
+// after the client replaced earlier messages).
+func liteRestoreVerifiedPrefix(owner string, req *Request, saved interactiveSessionEntry, status interactiveRestoreStatus) bool {
+	if status == interactiveRestoreExact {
+		return true
+	}
+	if status != interactiveRestoreCompanion {
+		return false
+	}
+	_, convStatus := conversationSuffixAfterDetailed(owner, req.Messages, saved.ConvKey)
+	return convStatus == conversationSuffixOK
+}
+
 // startLite starts the native run for a turn: the checkpointed session
 // resumed when the request exactly follows it, a first turn as a first turn,
 // and otherwise a session rebuilt from the request's history. Stateless
@@ -397,7 +411,7 @@ func (b *subscriptionBridge) startLite(ctx context.Context, req *Request, model,
 			return nil, nil, err
 		}
 		if savedOK && !saved.Dirty && (saved.Model == "" || saved.Model == model) {
-			if saved, since, status := b.restoreInteractiveSession(owner, outerSession, req); status == interactiveRestoreExact || status == interactiveRestoreReplyAnchor || status == interactiveRestoreCompanion {
+			if saved, since, status := b.restoreInteractiveSession(owner, outerSession, req); liteRestoreVerifiedPrefix(owner, req, saved, status) {
 				b.anchorOuterThread(owner, outerSession, req)
 				contextChanged := saved.ContextKey != "" && saved.ContextKey != turnKey(owner, req, nil)
 				return b.startInteractiveResumeTurn(ctx, req, model, "", owner, outerSession, saved, since, contextChanged)
