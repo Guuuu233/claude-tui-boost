@@ -1,3 +1,14 @@
+# v0.2.18 — verify lite restore prefix and preserve replacement `liveOuter` ownership (#27, #28)
+
+Thanks to @AlgernonYin for root-cause analysis, minimal patches and deterministic regression tests across [#27](https://github.com/Guuuu233/claude-tui-boost/issues/27) and [#28](https://github.com/Guuuu233/claude-tui-boost/issues/28):
+
+- **Verify conversation prefix on lite cold-start restore (#27):** `startLite` now resumes a saved native session only when the checkpoint's conversation hash (`ConvKey`) verifies against the request (`interactiveRestoreExact`, or `interactiveRestoreCompanion` with a verified `ConvKey` prefix). If a client edits or replaces earlier messages while keeping the last assistant reply (matching only `interactiveRestoreReplyAnchor`), the Runtime now rebuilds the native session from the request via `liteSeed` instead of resuming the stale native prefix.
+- **Keep replacement `liveOuter` ownership on late `removeRun` (#28):** `subscriptionBridge.removeRun` now deletes `b.liveOuter[key]` only when `b.liveOuter[key] == run`, matching the existing ownership check on `b.idle` so a finishing run cannot erase a replacement run that already acquired the outer-conversation slot.
+
+Verification: 85/85 Bun tests, Node supervisor tests, full Go test/vet suite including `TestLiteAnchorOnlyRestoreRebuildsFromTheRequest` and `TestRemoveRunKeepsReplacementLiveOuter`, and byte-identical rebuilds of all eight Runtime/Helper binaries verified by `scripts/verify-source-binaries.sh`.
+
+## Previous release
+
 # v0.2.17 — prompt-cache breakpoint on rebuilt sessions, reboot lock recovery, and nologin tmux fix (#21, #22, #23)
 
 Thanks to @AlgernonYin for detailed production diagnostics, root-cause analysis and patches across [#21](https://github.com/Guuuu233/claude-tui-boost/issues/21), [#22](https://github.com/Guuuu233/claude-tui-boost/issues/22) and [#23](https://github.com/Guuuu233/claude-tui-boost/issues/23):

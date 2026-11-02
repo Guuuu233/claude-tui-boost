@@ -3535,7 +3535,10 @@ func (b *subscriptionBridge) removeRun(run *subscriptionRun) {
 		}
 	}
 	if run.outerSession != "" {
-		delete(b.liveOuter, interactiveSessionStateKey(run.owner, run.outerSession))
+		key := interactiveSessionStateKey(run.owner, run.outerSession)
+		if b.liveOuter[key] == run {
+			delete(b.liveOuter, key)
+		}
 	}
 	b.mu.Unlock()
 	_ = os.RemoveAll(run.tmp)
