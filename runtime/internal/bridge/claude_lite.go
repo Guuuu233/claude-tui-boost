@@ -148,6 +148,10 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 	}
 	run, events, err := rt.bridge.startLite(r.Context(), req, model, owner, outerSession)
 	if err != nil {
+		var tooLarge *claudeHistoryImportTooLargeError
+		if errors.As(err, &tooLarge) {
+			return writeError(w, protoAnthropic, http.StatusRequestEntityTooLarge, err.Error()), err.Error()
+		}
 		return writeError(w, protoAnthropic, http.StatusBadGateway, "Claude Code: "+err.Error()), err.Error()
 	}
 	run.mu.Lock()
@@ -447,14 +451,17 @@ func (b *subscriptionBridge) anchorOuterThread(owner, outerSession string, req *
 	b.mu.Unlock()
 }
 
-// liteSeed splits req into the history a rebuilt native session resumes from
-// and the turn it is given: the user's messages after the last assistant
-// reply. Tool results there stay in the history, where the native session
-// sees them answer its calls; tool calls nothing answers (and answers to no
-// call) are dropped, as the Messages API refuses them.
+// liteSeed separates the historical messages and tool results from the
+// current user request. Explicit history import keeps every historical
+// record as user background; the default representation retains paired
+// native tool traffic and its completed assistant boundary.
 func liteSeed(req *Request) (*Request, string, map[string]Part, error) {
 	k, results, turn := liteTail(req.Messages)
-	history := pairedToolTraffic(append(slices.Clone(req.Messages[:k]), results...))
+	history := append(slices.Clone(req.Messages[:k]), results...)
+	if claudeHistoryImportEnabled() {
+		return prepareClaudeHistoryImport(req, history, turn)
+	}
+	history = pairedToolTraffic(history)
 	if n := len(history); n > 0 && history[n-1].Role != "assistant" {
 		history = append(history, Message{Role: "assistant", Parts: []Part{{Kind: Text, Text: liteResultsReceived}}})
 	}
@@ -540,7 +547,9 @@ func (b *subscriptionBridge) liteParkedBranch(owner, outerSession, model string,
 	run := b.liteParked[key]
 	delete(b.liteParked, key)
 	b.mu.Unlock()
-	if run == nil {
+	// Explicit import rebuilds late results from the client's complete
+	// history through liteSeed, using the same archive as other new sessions.
+	if run == nil || claudeHistoryImportEnabled() {
 		return "", "", nil, false
 	}
 	run.mu.Lock()

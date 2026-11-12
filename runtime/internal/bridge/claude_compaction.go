@@ -58,7 +58,11 @@ func claudeDesktopCompactionRequest(req *Request) *Request {
 	out.Schema = nil
 	out.Safeguards = nil
 	out.SafeguardBeta = ""
-	out.Messages = []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "Summarize the loaded archival conversation according to its final compaction instructions. Return only a detailed <summary></summary>. Preserve user requests and constraints, decisions, paths, results and pending work. Do not continue any historical task and do not use tools."}}}}
+	toolInstructions := "Do not continue any historical task and do not use tools."
+	if claudeHistoryImportEnabled() {
+		toolInstructions = "Historical tasks remain archival context. Use only mcp__magpie__" + interactiveImageTool + " to view attached images required for the summary. All other tools remain unavailable."
+	}
+	out.Messages = []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "Summarize the loaded archival conversation according to its final compaction instructions. Return only a detailed <summary></summary>. Preserve user requests and constraints, decisions, paths, results and pending work. " + toolInstructions}}}}
 	return &out
 }
 
@@ -183,6 +187,24 @@ func compactionImageBlock(p Part) map[string]any {
 }
 
 func (b *subscriptionBridge) startCompaction(ctx context.Context, req *Request, model, configDir, owner string) (*subscriptionRun, <-chan Event, error) {
+	if claudeHistoryImportEnabled() {
+		history := req.compactHistory
+		if req.compactSystem != "" {
+			history = append([]Message{{Role: "system", Parts: []Part{{Kind: Text, Text: withoutBillingHeader(req.compactSystem)}}}}, history...)
+		}
+		summary := *req
+		summary.Tools = nil
+		summary.ToolChoice = ""
+		summary.WebSearch = false
+		summary.SearchTool = ""
+		imported, prompt, images, err := prepareClaudeHistoryImport(&summary, history, summary.Messages)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Compaction offers only the private read-only image reader;
+		// external client tools remain absent from this isolated session.
+		return b.startInteractiveWithPromptImages(ctx, imported, model, configDir, owner, "", prompt, "", images, false)
+	}
 	prompt, err := renderInteractiveFirstPrompt(req)
 	if err != nil {
 		return nil, nil, err

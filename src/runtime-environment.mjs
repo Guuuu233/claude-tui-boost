@@ -1,4 +1,4 @@
-// Only operator-selected boolean recovery options cross the managed boundary.
+// Only operator-selected boolean recovery and history options cross the managed boundary.
 // Never forward arbitrary environment names, credentials or legacy certificates.
 const recoveryFlags = [
   'MAGPIE_CLAUDE_DURABLE_TOOL_JOURNAL',
@@ -7,6 +7,7 @@ const recoveryFlags = [
   'MAGPIE_CLAUDE_NATIVE_TMUX_GUARD',
   'MAGPIE_CLAUDE_FIRST_TURN_ANCHOR',
   'MAGPIE_CLAUDE_AUTO_READONLY_HISTORY_DRIFT',
+  'MAGPIE_CLAUDE_HISTORY_IMPORT',
 ];
 
 export function runtimeEnvironment(base, source) {

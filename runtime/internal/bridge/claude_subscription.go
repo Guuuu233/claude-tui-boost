@@ -4122,6 +4122,10 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if err != nil {
+		var tooLarge *claudeHistoryImportTooLargeError
+		if errors.As(err, &tooLarge) {
+			return writeError(w, from, http.StatusRequestEntityTooLarge, err.Error()), err.Error()
+		}
 		if errors.Is(err, errInteractiveOuterLive) || errors.Is(err, errInteractiveTerminalBusy) || errors.Is(err, errInteractiveSessionStoreInvalid) {
 			return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 		}
