@@ -40,15 +40,21 @@ function readLinuxBootId() {
 
 function isProcessDead(pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try { process.kill(pid, 0); return false; }
+  try { process.kill(pid, 0); }
   catch (e) { return e?.code === "ESRCH"; }
+  if (process.platform !== "linux") return false;
+  try {
+    // Linux retains exited PIDs until reaping. The explicit State field
+    // identifies terminal states independently of the process name.
+    const status = readFileSync(`/proc/${pid}/status`, "utf8");
+    return /^State:[ \t]+[ZX](?:[ \t]|$)/m.test(status);
+  } catch { return false; }
 }
 
 // A .managed-live claim left behind by an unclean reboot or SIGKILLed
 // supervisor is safe to reclaim only when we can prove the claiming supervisor
-// is gone (either a different Linux boot_id, a timestamp older than the
-// current OS boot, or an ESRCH non-existent PID). Live or EPERM PIDs are
-// never reclaimed.
+// is gone (a different Linux boot_id, an ESRCH PID, or a Linux Z/X exit state).
+// Running processes, EPERM and unknown process states keep their claim.
 function isStaleSupervisorClaim(raw, bootId = readLinuxBootId()) {
   const parts = String(raw ?? "").trim().split(/\s+/);
   const pid = Number(parts[0]);

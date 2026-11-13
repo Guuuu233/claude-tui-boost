@@ -29,6 +29,14 @@ Verified live handoffs and clean native-session continuations keep their existin
 
 This changes the model's interpretation of old assistant replies and tool traffic from native conversation turns to quoted background. Cache reuse and answer quality can therefore change. It addresses the request representation used during reconstruction; admission by a particular relay remains subject to that relay's policy and requires live verification. The option preserves historical context rather than granting permission to repeat completed tool operations.
 
+## Managed supervisor claims and Docker process reaping
+
+A startup error containing `already has a live supervisor claim` identifies the supervisor PID recorded in `.managed-live`. On Linux, the supervisor checks that PID's process status as well as its existence: a confirmed zombie (`Z`) or dead (`X`) process has exited, so the existing stale-claim recovery can proceed. Running processes, permission failures and unreadable or unknown status remain protected. Account ownership, connection keys and saved conversation state retain their existing checks.
+
+For Docker deployments, enable an init process (`init: true` for the existing Compose service, or `--init` with the existing `docker run` configuration) so orphaned children are reaped. Apply this through container recreation while keeping the same `/config` bind mount and service environment. An ordinary restart keeps the current container's init setting. This addresses orphan process cleanup; the logs preceding a child exit are still needed to explain why it terminated.
+
+When retaining a locally compiled `bin/magpie-tui-runtime`, deploy this fix by updating `scripts/managed-runtime-supervisor.mjs` from the same source branch at an idle boundary. A complete plugin package update can replace that local build. This supervisor change requires no Go rebuild and preserves login and conversation data.
+
 ## Checkpoint integrity and empty retries (since v0.2.8)
 
 All checkpoint lookups validate the file at the point of use. Invalid, insecure or oversized state returns HTTP 409; it must not be treated as a new conversation. A native resume also stops if its dirty checkpoint cannot be persisted before launch. Preserve damaged state for investigation rather than deleting it to force a fresh session.
