@@ -13,7 +13,7 @@ See [HOST_COMPATIBILITY.md](HOST_COMPATIBILITY.md) for the current Magpie host b
 
 The runtime/helper binaries for all four macOS/Linux combinations ship in `bin/`. Bun is required for the plugin and vendored TypeScript wrapper, tmux for the native interactive session, and an already installed official Claude Code CLI for login. The automatic connection action prepares tmux and, on macOS when required, Homebrew. Bun suffices for the `.mjs` helpers; a separate Node installation is not required. Automatic subscription status verification requires Claude CLI 2.1.268 or newer and an exact dedicated config-directory match.
 
-Go is required only for rebuilding. Release CI uses Go 1.27.1, `CGO_ENABLED=0` and `-trimpath`; install machines need no Go compiler. The release workflow rebuilds all eight binaries on Ubuntu and requires them to match the committed ones byte for byte; release checksums cover artifact integrity.
+Go is required only for rebuilding. The fork's packaged executables and release CI use Go 1.27.2, `CGO_ENABLED=0`, `-trimpath` and `-buildvcs=false`; install machines need no Go compiler. The release workflow rebuilds all eight binaries and compares their bytes directly with the committed artifacts. `package-assets.json` records package/toolchain versions, required paths, target architectures and byte counts; package checking covers file structure and executable headers rather than content digests.
 
 ## Runtime scope
 

@@ -1,3 +1,16 @@
+# v0.2.19-fork.1 — bundled Runtime delivery and supervisor recovery
+
+Install this fork through `github:liangxyz/claude-tui-boost`. The package version is `0.2.19-fork.1` and its platform Runtime/MCP Helper files are rebuilt from the fork source with Go 1.27.2.
+
+- Historical reconstruction can import the complete supplied conversation as labelled user context in a fresh native session. Set `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment; verified native continuations retain their existing path.
+- Imported prompts retain historical tool records and use the private reader for inline images. A complete prompt exceeding the 512 KiB UTF-8 TUI budget returns HTTP 413. URL-only images require inline content.
+- Linux zombie/dead supervisor states are recognized as exited so existing stale-claim recovery can proceed. Live and ambiguous process states remain protected. Docker deployments can enable an init process to reap orphaned children.
+- The fork packaging contract uses `package-assets.json` to describe versions, executable targets, architecture and byte counts. Packing validates inventory and executable structure. Content digests are outside this fork's contract.
+
+Update at an idle boundary while preserving the Claude profile and existing persistent directories. A previously hand-built generic `bin/magpie-tui-runtime` has priority over a platform executable; verify the installed package and effective process path after an update. Cross-compilation alone establishes build coverage for macOS/arm64, while native acceptance on those targets and provider-specific relay behavior remain separate checks.
+
+## Upstream release history
+
 # v0.2.18 — verify lite restore prefix and preserve replacement `liveOuter` ownership (#27, #28)
 
 Thanks to @AlgernonYin for root-cause analysis, minimal patches and deterministic regression tests across [#27](https://github.com/Guuuu233/claude-tui-boost/issues/27) and [#28](https://github.com/Guuuu233/claude-tui-boost/issues/28):

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.19-fork.1 — complete bundled history-import and supervisor fixes
+
+- Ship rebuilt Runtime and MCP Helper executables for Linux/macOS, amd64/arm64, from the fork source with Go 1.27.2.
+- Include opt-in archive-style history import (`MAGPIE_CLAUDE_HISTORY_IMPORT=1`), preserving verified native continuations and historical tool records; oversized imported prompts return HTTP 413 at the 512 KiB UTF-8 input budget.
+- Recognize confirmed Linux Z/X supervisor exit states when recovering stale managed claims; preserve live-process, permission and unknown-state protections.
+- Use `package-assets.json` for executable inventory, target format/architecture and byte counts; align pack/CI/release scripts and the existing release contract test with this fork's zero-digest packaging convention.
+- Install through `github:liangxyz/claude-tui-boost`; the package carries the executable implementation alongside its JavaScript integration. Historical upstream release notes below remain reference material.
+
+
 ## 0.2.18 — verify lite restore prefix before resuming and preserve replacement liveOuter ownership (#27, #28) (2026-11-03)
 
 - **Verify prefix on lite cold-start restore (#27, thanks @AlgernonYin):** `startLite` now resumes a saved native session only when the checkpoint's conversation hash (`ConvKey`) verifies against the request (`interactiveRestoreExact`, or `interactiveRestoreCompanion` with a verified `ConvKey` prefix). Anchor-only matches where the client modified or replaced messages before the last assistant reply now fall through to `liteSeed` and rebuild from the request instead of resurrecting replaced native history.

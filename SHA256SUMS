@@ -1,9 +1,0 @@
-9161948cff3be470a7a110d3a7f0382c589938d3f46e93563c8aa0a5620f6134  bin/magpie-tui-bridge
-04fe12b84b21ff1435f487b4a49dc4dab3bb62a3605e5530fd39218ad6927fc7  bin/magpie-tui-mcp-helper.darwin-amd64
-d4a1606d8b6d8b2dc8bd92e3a9d08cbe16a2eb8d466e44b5628b9faad7c63de3  bin/magpie-tui-mcp-helper.darwin-arm64
-0dea69f4b42907aa950f92b8e469623a7362ce97a8097e98a62050d6daba4506  bin/magpie-tui-mcp-helper.linux-amd64
-0cf5a62607de076304f92b75a334b7840dd310eb8f809f5b7fa003f4841d0b68  bin/magpie-tui-mcp-helper.linux-arm64
-d7eb8ebbeafdcd8a1f1bf3e4832083b7a47fc0e60e5263e6d68cd396f82e40d2  bin/magpie-tui-runtime.darwin-amd64
-333fa21b4ee08b02e97d146a425082893a9e347e8d9548843f9ad9b2f7b792d8  bin/magpie-tui-runtime.darwin-arm64
-7cd54d093bd6544eaf2b65cccb1df4a6cc61e3cc6613c2b5a8a3a495d40bf7e2  bin/magpie-tui-runtime.linux-amd64
-72edae28e1fd1c1ddac8832fdc027455bf55cf93c7914e3c14287c088df1a89a  bin/magpie-tui-runtime.linux-arm64

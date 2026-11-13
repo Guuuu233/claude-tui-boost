@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "packageVersion": "0.2.19-fork.1",
+  "goVersion": "1.27.2",
+  "assets": [
+    {
+      "path": "bin/magpie-tui-bridge",
+      "kind": "bridge",
+      "platform": "any",
+      "arch": "any",
+      "bytes": 583
+    },
+    {
+      "path": "bin/magpie-tui-runtime.darwin-amd64",
+      "kind": "runtime",
+      "platform": "darwin",
+      "arch": "amd64",
+      "bytes": 12492432
+    },
+    {
+      "path": "bin/magpie-tui-runtime.darwin-arm64",
+      "kind": "runtime",
+      "platform": "darwin",
+      "arch": "arm64",
+      "bytes": 11674146
+    },
+    {
+      "path": "bin/magpie-tui-runtime.linux-amd64",
+      "kind": "runtime",
+      "platform": "linux",
+      "arch": "amd64",
+      "bytes": 12253627
+    },
+    {
+      "path": "bin/magpie-tui-runtime.linux-arm64",
+      "kind": "runtime",
+      "platform": "linux",
+      "arch": "arm64",
+      "bytes": 11326999
+    },
+    {
+      "path": "bin/magpie-tui-mcp-helper.darwin-amd64",
+      "kind": "helper",
+      "platform": "darwin",
+      "arch": "amd64",
+      "bytes": 10057568
+    },
+    {
+      "path": "bin/magpie-tui-mcp-helper.darwin-arm64",
+      "kind": "helper",
+      "platform": "darwin",
+      "arch": "arm64",
+      "bytes": 9360546
+    },
+    {
+      "path": "bin/magpie-tui-mcp-helper.linux-amd64",
+      "kind": "helper",
+      "platform": "linux",
+      "arch": "amd64",
+      "bytes": 9836654
+    },
+    {
+      "path": "bin/magpie-tui-mcp-helper.linux-arm64",
+      "kind": "helper",
+      "platform": "linux",
+      "arch": "arm64",
+      "bytes": 9092530
+    }
+  ]
+}

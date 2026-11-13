@@ -31,14 +31,14 @@ jobs:
           node-version: '22'
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache-dependency-path: runtime/go.mod
       - name: Install PTY dependency for synthetic session tests
         run: sudo apt-get update && sudo apt-get install -y tmux
       - uses: actions/checkout@v4
         with:
           repository: yetone/magpie
-          ref: 63be47717a9ca91fc89102078a1f1fff3e03e0ce
+          ref: v0.1.1268
           path: .compat-host
           persist-credentials: false
           sparse-checkout-cone-mode: false
@@ -100,7 +100,7 @@ jobs:
             done
           done
           node scripts/verify-package-assets.mjs
-      - name: Verify actual npm release archive without publishing
+      - name: Verify packaged platform inventory without publishing
         shell: bash
         run: |
           set -euo pipefail
@@ -110,6 +110,7 @@ jobs:
           name="$(node -p 'const p=require("./package.json"); `${p.name}-${p.version}.tgz`')"
           tar -xzf "$dir/$name" -C "$dir"
           node "$dir/package/scripts/verify-package-assets.mjs"
+          test -s "$dir/package/package-assets.json"
           test -f "$dir/package/scripts/magpie-tui-doctor.mjs"
           test -f "$dir/package/RELEASE_NOTES.md"
           test -f "$dir/package/bin/magpie-tui-runtime.linux-amd64"

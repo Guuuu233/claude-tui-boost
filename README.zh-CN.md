@@ -10,7 +10,7 @@
 持续会话、流式响应、MCP 工具往返——无需修改 Magpie 本体。
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/Guuuu233/claude-tui-boost)](https://github.com/Guuuu233/claude-tui-boost/releases/latest)
+[![上游版本](https://img.shields.io/github/v/release/Guuuu233/claude-tui-boost)](https://github.com/Guuuu233/claude-tui-boost/releases/latest)
 [![macOS / Linux / Windows WSL2](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL2)-lightgrey)](COMPATIBILITY.md)
 
 </div>
@@ -51,11 +51,25 @@
          原生 Claude Code TUI
 ```
 
-## 30 秒看懂如何安装
+## Fork 安装：0.2.19-fork.1
+
+本 fork 随包提供 Linux/macOS、amd64/arm64 四种目标的 Runtime 与 MCP Helper，包含历史导入和 Linux 僵尸进程启动恢复修复。
+
+```sh
+magpie plugin add github:liangxyz/claude-tui-boost
+```
+
+网页安装或更新入口填写 `github:liangxyz/claude-tui-boost`，完成后确认版本为 `0.2.19-fork.1`。在 Magpie 服务环境保留 `MAGPIE_CLAUDE_HISTORY_IMPORT=1` 可启用归档式历史重建；正常原生会话续接保持原路径。导入文字预算为 512 KiB，内联图片沿已有私有 MCP 通道读取，具体行为见 [恢复说明](RECOVERY.md)。
+
+Docker 部署保持现有 `/config` 挂载；重建容器时可启用 Compose 的 `init: true` 或 Docker 的 `--init`，用于回收孤儿进程。插件更新安排在任务空闲时，Claude profile 与登录资料保持原样。历史本机构建的 `bin/magpie-tui-runtime` 具有优先级；正常托管入口使用随包的平台专用 Runtime。
+
+`package-assets.json` 记录版本、Go 工具链、文件种类、平台/架构与字节数。打包检查覆盖清单完整性、普通可执行文件及平台文件头；Linux 启动行为另行实测。该 fork 采用零内容摘要操作的打包约定。macOS 与 arm64 产物为交叉构建，相应真实平台运行效果留待目标环境验证。
+
+## 上游 v0.2.18 安装参考
 
 **环境要求：** 支持 GitHub 插件安装的 Magpie、官方 Claude Code CLI **2.1.268 或更新版本**，系统为 macOS、Linux（arm64、x64）或启用了 WSL2 的 Windows（默认 WSL2 发行版内需有 `bun`、`tmux` 与 `claude`）。连接向导可以自动准备 tmux；在 Windows 上，插件通过 `wsl.exe` 自动桥接进 WSL2 运行。**插件和 Claude Code 必须安装在运行 Magpie 的同一台主机**，VPS 用户应在 VPS 上操作。
 
-**第 1 步：安装**（当前正式版 [v0.2.18](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.18)）。
+**第 1 步：安装上游版本**（上游参考版 [v0.2.18](https://github.com/Guuuu233/claude-tui-boost/releases/tag/v0.2.18)）。
 
 ```sh
 magpie plugin add github:Guuuu233/claude-tui-boost
@@ -82,7 +96,7 @@ magpie plugin login claude-tui
 | [完整技术说明](TECHNICAL_REFERENCE.md) | 高级参数、权限影响、测试和源码构建 |
 | [版本说明](RELEASE_NOTES.md) · [更新记录](CHANGELOG.md) | 已实现改进、已知限制和后续维护 |
 
-**当前稳定版：** `v0.2.18` 在 lite 恢复路径上校验完整前缀哈希（避免客户端改写早先消息后仍按旧原生会话恢复），并在旧 run 异步退出时保留新接管 run 的 `liveOuter` 槽位（#27、#28）。`v0.2.17` 为重建会话增加 1 小时缓存断点、支持宿主机重启后自动回收残留 `.managed-live` 锁、并兼容 `nologin` 服务账户启动 tmux（#21、#22、#23）。`v0.2.16` 在 `package.json` 的 `os` 字段加入 `win32`（避免 Windows 下安装被包管理器拦截）并同步更新全部技术说明文档（`v0.2.15` 新增 Windows WSL2 自动桥接支持）。`v0.2.14` 把请求上限从 16 MiB 提高到 32 MiB（图片很多的长对话不再中断），超过上限时返回 413，而不是会被反复重试的 502。`v0.2.13` 在 v0.2.12 基础上收紧已完成工具回复的回放：只有完全相同的请求才会拿到旧回复；额度用尽时返回 429 而非 502；复杂长会话与工具重放边界仍属实验性能力，详见[发布说明](RELEASE_NOTES.md)。
+**上游版本参考：** `v0.2.18` 在 lite 恢复路径上校验完整前缀哈希（避免客户端改写早先消息后仍按旧原生会话恢复），并在旧 run 异步退出时保留新接管 run 的 `liveOuter` 槽位（#27、#28）。`v0.2.17` 为重建会话增加 1 小时缓存断点、支持宿主机重启后自动回收残留 `.managed-live` 锁、并兼容 `nologin` 服务账户启动 tmux（#21、#22、#23）。`v0.2.16` 在 `package.json` 的 `os` 字段加入 `win32`（避免 Windows 下安装被包管理器拦截）并同步更新全部技术说明文档（`v0.2.15` 新增 Windows WSL2 自动桥接支持）。`v0.2.14` 把请求上限从 16 MiB 提高到 32 MiB（图片很多的长对话不再中断），超过上限时返回 413，而不是会被反复重试的 502。`v0.2.13` 在 v0.2.12 基础上收紧已完成工具回复的回放：只有完全相同的请求才会拿到旧回复；额度用尽时返回 429 而非 502；复杂长会话与工具重放边界仍属实验性能力，详见[发布说明](RELEASE_NOTES.md)。
 
 ## 参与贡献
 

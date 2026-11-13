@@ -193,23 +193,23 @@ bun install --ignore-scripts
 bun test
 ```
 
- To verify binaries against this release, run `shasum -a 256 -c SHA256SUMS` on macOS/Linux. For a **strict byte-for-byte comparator** of rebuilt binaries against the checked-in artifacts, using Go 1.27.1:
+For this fork, validate the shipped target inventory with `node scripts/verify-package-assets.mjs`. The `package-assets.json` contract records versions, paths, platform/architecture and byte counts. For a **strict byte-for-byte comparator** of rebuilt binaries against the checked-in artifacts, using Go 1.27.2:
 
 ```sh
 bash scripts/verify-source-binaries.sh
 ```
 
-To build individual binaries using Go 1.27 or newer:
+To build individual binaries using the pinned Go 1.27.2 toolchain:
 
 ```sh
-(cd runtime && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../bin/magpie-tui-runtime.linux-amd64 ./cmd/magpie-tui-runtime)
-(cd runtime && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o ../bin/magpie-tui-mcp-helper.linux-amd64 ./cmd/magpie-tui-mcp-helper)
+(cd runtime && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o ../bin/magpie-tui-runtime.linux-amd64 ./cmd/magpie-tui-runtime)
+(cd runtime && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o ../bin/magpie-tui-mcp-helper.linux-amd64 ./cmd/magpie-tui-mcp-helper)
 ```
 
-Repeat with `GOOS=darwin` and `GOARCH=arm64/amd64`, or `GOOS=linux GOARCH=arm64` for other supported targets. Cross-compiled binaries have not all been tested natively. The release workflow rebuilds all eight binaries on Ubuntu with Go 1.27.1, `CGO_ENABLED=0` and `-trimpath`, and refuses to publish unless each matches the committed binary byte for byte; released `SHA256SUMS` cover artifact integrity. (The v0.1.0 builds did differ between Ubuntu and macOS hosts; current builds with these settings match.)
+Repeat with `GOOS=darwin` and `GOARCH=arm64/amd64`, or `GOOS=linux GOARCH=arm64` for other supported targets. After rebuilding all eight executables, run `node scripts/verify-package-assets.mjs --write`, then run the checker again without arguments. Cross-compilation establishes build coverage; native behavior on each target remains a separate verification scope. CI and manual release rebuild with Go 1.27.2, `CGO_ENABLED=0`, `-trimpath` and `-buildvcs=false`, compare the resulting bytes directly, and validate the package inventory. This fork's packaging contract uses no content digests.
 
 ### Provenance and maintenance
 
-Initial source was developed as [magpie-community/plugins PR #107](https://github.com/magpie-community/plugins/pull/107), which the maintainer **closed without merging**. This independent repository is **not** a continuation of an official review or approval. We retain upstream and vendored license notices (`LICENSE`, `runtime/LICENSE.magpie`, `vendor/claude-bridge-magpie/LICENSE`) and provide release checksums.
+Initial source was developed as [magpie-community/plugins PR #107](https://github.com/magpie-community/plugins/pull/107), which the maintainer **closed without merging**. This independent repository is **not** a continuation of an official review or approval. We retain upstream and vendored license notices (`LICENSE`, `runtime/LICENSE.magpie`, `vendor/claude-bridge-magpie/LICENSE`) and document the shipped targets in `package-assets.json`.
 
 Issues and security concerns: [GitHub Issues](https://github.com/Guuuu233/claude-tui-boost/issues). This is an experimental third-party distribution without SLA, support commitments or official affiliation.

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ "$(go env GOVERSION)" != 'go1.27.2' ]; then
+  echo 'Source reproduction requires Go 1.27.2, matching package-assets.json.' >&2
+  exit 2
+fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/magpie-bin-check.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 for spec in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
@@ -16,4 +20,4 @@ for spec in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
     echo "MATCH $name.$os-$arch"
   done
 done
-(cd "$root" && shasum -a 256 -c SHA256SUMS)
+(cd "$root" && node scripts/verify-package-assets.mjs)
