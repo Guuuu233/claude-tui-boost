@@ -11,14 +11,6 @@ func claudeHistoryImportEnabled() bool {
 	return os.Getenv("MAGPIE_CLAUDE_HISTORY_IMPORT") == "1"
 }
 
-type claudeHistoryImportTooLargeError struct {
-	size int
-}
-
-func (e *claudeHistoryImportTooLargeError) Error() string {
-	return fmt.Sprintf("Claude history import requires %d UTF-8 bytes; the native input budget is %d bytes. Compact the conversation and try again.", e.size, interactiveHistoricalBootstrapMaxBytes)
-}
-
 // prepareClaudeHistoryImport presents the full archive and current request
 // in the first user input of a fresh native session.
 func prepareClaudeHistoryImport(req *Request, history, turn []Message) (*Request, string, map[string]Part, error) {
@@ -40,13 +32,15 @@ func prepareClaudeHistoryImport(req *Request, history, turn []Message) (*Request
 	}
 	prompt := background + "\n<current_user_request>\n" + current +
 		"\n</current_user_request>\nRespond to the current request using the historical records as background.\n"
-	if len(prompt) > interactiveHistoricalBootstrapMaxBytes {
-		return nil, "", nil, &claudeHistoryImportTooLargeError{size: len(prompt)}
-	}
 	for id, image := range currentImages {
 		images[id] = image
 	}
 	imported := *req
+	imported.historyArchive = nil
+	if len(prompt) > interactiveHistoricalBootstrapMaxBytes {
+		imported.historyArchive = newClaudeHistoryArchive(prompt)
+		prompt = imported.historyArchive.prompt(current)
+	}
 	imported.seedHistory = nil
 	imported.compactHistory = nil
 	imported.compactSystem = ""

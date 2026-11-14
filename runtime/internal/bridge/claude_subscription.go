@@ -213,6 +213,8 @@ type subscriptionRun struct {
 	// Claude retrieves them through interactiveImageTool; they are never
 	// exposed as files or as client-visible tool calls.
 	images map[string]Part
+	// historyArchive holds this native run's private paginated import.
+	historyArchive *claudeHistoryArchive
 
 	mu sync.Mutex
 	// sending is held across a send to the segment and taken before it is
@@ -3146,6 +3148,10 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, mcpToolResult{IsError: true, Content: []map[string]any{{"type": "text", "text": "This is a read-only recovery turn; no tools are available. Answer in text only."}}})
 		return
 	}
+	if run.interactive && call.Name == interactiveArchiveTool {
+		run.serveClaudeHistoryArchive(w, call.Arguments)
+		return
+	}
 	if run.interactive && call.Name == interactiveImageTool {
 		var a struct {
 			ID string `json:"id"`
@@ -3423,10 +3429,14 @@ func (r *subscriptionRun) launch() error {
 	}
 	r.mu.Lock()
 	r.tree = t
+	done := r.interactiveDone
 	r.mu.Unlock()
 	go func() {
 		_ = t.Wait()
 		r.drain()
+		if done != nil {
+			close(done)
+		}
 		r.finish()
 	}()
 	return nil
@@ -3546,6 +3556,7 @@ func (b *subscriptionBridge) removeRun(run *subscriptionRun) {
 	sid, sessions, shelved := run.sessionID, run.sessions, run.shelved
 	releaseWork := run.releaseWork
 	run.releaseWork = nil
+	run.historyArchive = nil
 	run.mu.Unlock()
 	if !shelved {
 		removeSession(sessions, sid)
@@ -3971,7 +3982,13 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	// text, and its model went on to write its own calls as text.
 	var more []bridgeTool
 	if run != nil && !run.offers(req.Tools) {
-		more = bridgeTools(req)
+		if run.interactive {
+			run.mu.Lock()
+			more = run.interactiveToolsLocked(req)
+			run.mu.Unlock()
+		} else {
+			more = bridgeTools(req)
+		}
 	}
 	var events <-chan Event
 	if run != nil {
@@ -4107,14 +4124,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 		if err == nil {
 			run.mu.Lock()
-			keepPrivateImage := run.interactive && len(run.images) > 0 && !readOnly
-			run.tools = map[string]bool{}
-			for _, t := range req.Tools {
-				run.tools[t.Name] = true
-			}
-			if keepPrivateImage {
-				run.tools[interactiveImageTool] = true
-			}
+			run.resetAllowedToolsLocked(req)
 			if !readOnly && search.Name != "" && config.SearchHandler != nil {
 				run.search, run.searchName = config.SearchHandler, search.Name
 			}
@@ -4122,10 +4132,6 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if err != nil {
-		var tooLarge *claudeHistoryImportTooLargeError
-		if errors.As(err, &tooLarge) {
-			return writeError(w, from, http.StatusRequestEntityTooLarge, err.Error()), err.Error()
-		}
 		if errors.Is(err, errInteractiveOuterLive) || errors.Is(err, errInteractiveTerminalBusy) || errors.Is(err, errInteractiveSessionStoreInvalid) {
 			return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 		}

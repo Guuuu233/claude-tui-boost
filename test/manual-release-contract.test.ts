@@ -10,7 +10,7 @@ test("manual release cannot patch/push Magpie or publish from an unmerged PR bra
   expect(workflow).toContain("cmp \"$dir/$kind.$os-$arch\" \"bin/$kind.$os-$arch\"");
   expect(workflow).toContain("npm pack --silent");
   expect(workflow).toContain("go-version: '1.27.2'");
-  expect(workflow).toContain("default: v0.2.19-fork.1");
+  expect(workflow).toContain("default: v0.2.20-fork.1");
   expect(workflow).toContain('node scripts/verify-package-assets.mjs');
   expect(workflow).toContain('test -s "$RUNNER_TEMP/plugin-release/package/package-assets.json"');
   expect(workflow).toContain('"$dir/$name" "$dir/package/package-assets.json"');

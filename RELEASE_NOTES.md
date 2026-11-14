@@ -1,3 +1,28 @@
+# v0.2.20-fork.1 — paginated history import and native-turn cleanup
+
+Install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.1`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment. The release supplies rebuilt Runtime and MCP Helper executables for Linux/macOS, amd64/arm64.
+
+## Changes
+
+- Large imported inputs use a short first user prompt plus the run-private `magpie_read_import_archive` MCP reader. Exact UTF-8 pages retain original roles, tool records, current instructions and image references. Inputs within the 512 KiB paste budget keep their existing inline representation.
+- Private archive reads stay inside the native run, alongside the existing image reader. The original client history and business tool handoff retain their existing roles. Ordinary rebuilds, late tool-result rebuilding and independent compaction share this import path. Oversized first and resumed current inputs use the same reader while verified resumes retain their native session identity. Explicit tool-free recovery keeps its zero-tool contract.
+- Native child completion and output draining are coordinated so an exited wrapper with inherited output handles can finish cleanup. Cancellation while retiring an idle/parked run stops waiting promptly while native ownership remains protected until the child is reaped.
+- Normal active turns still serialize by conversation. A genuine overlapping request may receive HTTP 503 with `Retry-After: 5`; the change targets delayed cleanup, while preserving live tools and late output.
+
+## Verification evidence
+
+- The two targeted 503 cases reproduced before the lifecycle repair and passed afterward. The focused suite recorded 142 passing cases/subcases and one existing private-capture skip; the bridge suite recorded 474 passing cases/subcases and the same skip. Additional inherited-stdin cleanup completed under the existing bounded wait.
+- Real Claude Code 2.1.325, the new Go MCP Helper and an isolated local synthetic API carried all 69 pages of a 562,842-byte archive into the subsequent model request. The first request contained only a user message, and the wrapper emitted a successful terminal result and exited 0. The mock drove the tool reads; this proves native transport and completion rather than autonomous model comprehension or live-provider admission.
+- Go regression coverage separately exercises the production archive owner, UTF-8 reconstruction, first/resumed inputs, late tool results, compaction, private tool isolation and expired archives. The final tool-free recovery correction passed 31 affected cases/subcases with zero failures/skips; its four Runtime targets were rebuilt afterward, while the four unchanged Helpers retain their preceding build evidence. The native synthetic callback experiment and the production Go checks are distinct layers of evidence.
+
+## Operational scope
+
+Paged delivery preserves available source text and asks Claude to read it before acting. Actual reading and understanding remain model behavior; additional tool calls and model rounds add latency and usage. The 32 MiB HTTP body limit, model context window and URL-only image constraints remain. Archives belong to a single native run; delivered pages enter its normal transcript, and a new run follows the existing continuation/rebuild rules.
+
+Update at an idle boundary and preserve your profile, service environment and persistent directories. Package inventory remains `package-assets.json` under the fork's structural/platform verification contract. Linux amd64 receives native execution checks; cross-built macOS/arm64 artifacts require acceptance in their target environments. Provider-specific relay admission remains a live-environment check.
+
+## Previous fork version
+
 # v0.2.19-fork.1 — bundled Runtime delivery and supervisor recovery
 
 Install this fork through `github:liangxyz/claude-tui-boost`. The package version is `0.2.19-fork.1` and its platform Runtime/MCP Helper files are rebuilt from the fork source with Go 1.27.2.

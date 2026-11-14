@@ -51,7 +51,7 @@ Magpie-compatible Agent / SDK client
        Interactive Claude Code
 ```
 
-## Fork install — 0.2.19-fork.1
+## Fork install — 0.2.20-fork.1
 
 This fork bundles rebuilt Runtime and MCP Helper executables for Linux/macOS on amd64/arm64. The installed package contains both the opt-in history import and Linux zombie-supervisor recovery fix. Install from the fork through Magpie's GitHub plugin entry:
 
@@ -59,7 +59,7 @@ This fork bundles rebuilt Runtime and MCP Helper executables for Linux/macOS on 
 magpie plugin add github:liangxyz/claude-tui-boost
 ```
 
-In Magpie's web UI, install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.19-fork.1`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment to enable archive-style rebuilding; normal verified native continuation stays unchanged. History import has a 512 KiB UTF-8 prompt budget and supports inline images through the existing private MCP reader. See [Recovery](RECOVERY.md) for behavior and limits.
+In Magpie's web UI, install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.1`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment to enable archive-style rebuilding. Verified continuations preserve native session identity and history matching; an oversized current input uses the same private paging path while keeping its resume ID. Imports within the 512 KiB UTF-8 paste budget retain the inline path. Larger imports use a short first user prompt and a run-private paginated MCP reader for the complete text, including an oversized current request. Inline images retain their existing private MCP reader. See [Recovery](RECOVERY.md) for lifecycle, reading costs and limits.
 
 For Docker, preserve the existing `/config` mount and enable `init: true` (Compose) or `--init` (docker run) when recreating the container. Update at an idle boundary and preserve the selected Claude profile. Previously installed local `bin/magpie-tui-runtime` overrides take precedence over platform files; the package's rebuilt platform Runtime is the normal managed entry.
 

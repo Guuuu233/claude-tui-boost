@@ -1056,20 +1056,23 @@ func interactiveImageID(p Part) string {
 
 func interactiveTools(req *Request, hasImages bool) []bridgeTool {
 	tools := bridgeTools(req)
-	if !hasImages {
-		return tools
-	}
 	kept := tools[:0]
 	for _, tool := range tools {
-		if tool.Name != interactiveImageTool {
+		if tool.Name != interactiveArchiveTool && (!hasImages || tool.Name != interactiveImageTool) {
 			kept = append(kept, tool)
 		}
 	}
-	return append(kept, bridgeTool{
-		Name:        interactiveImageTool,
-		Description: "View an image attached to the current conversation. Call this tool with the attachment id shown in the prompt before answering questions that depend on that image's contents.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}`),
-	})
+	if hasImages {
+		kept = append(kept, bridgeTool{
+			Name:        interactiveImageTool,
+			Description: "View an image attached to the current conversation. Call this tool with the attachment id shown in the prompt before answering questions that depend on that image's contents.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}`),
+		})
+	}
+	if req.historyArchive != nil {
+		kept = append(kept, claudeHistoryArchiveTool())
+	}
+	return kept
 }
 
 // renderInteractiveHistoricalBootstrap starts a fresh inner Claude session
@@ -1308,6 +1311,9 @@ func (b *subscriptionBridge) startInteractiveWithPrompt(ctx context.Context, req
 }
 
 func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Context, req *Request, model, configDir, owner, outerSession, prompt, resumeID string, images map[string]Part, readOnly bool) (*subscriptionRun, <-chan Event, error) {
+	if !readOnly {
+		req, prompt = prepareClaudeHistoryArchivePrompt(req, prompt)
+	}
 	bridge, err := interactiveBridgeExecutable()
 	if err != nil {
 		return nil, nil, err // fail closed, not claude -p
@@ -1491,25 +1497,32 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	}
 	cmd.Env = binary.env(env, configDir)
 	cmd.Stdin = strings.NewReader(prompt) // finite prompt with immediate EOF
-	stdout, err := cmd.StdoutPipe()
+	// Own the output pipes so process reaping can run independently while
+	// readers preserve the wrapper's final transcript and result rows.
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		clean()
 		return nil, nil, err
 	}
-	stderr, err := cmd.StderrPipe()
+	stderr, stderrW, err := os.Pipe()
 	if err != nil {
+		_, _ = stdout.Close(), stdoutW.Close()
 		clean()
 		return nil, nil, err
 	}
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
+	finished := make(chan struct{})
 	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp,
-		interactive: true, owner: owner, pending: map[string]chan mcpToolResult{},
+		interactive: true, interactiveDone: finished, outputs: []*os.File{stdout, stderr},
+		owner: owner, pending: map[string]chan mcpToolResult{},
 		tools: map[string]bool{}, effort: req.Effort, interactiveContextKey: turnKey(owner, req, nil),
 		interactiveContextSnapshot: func() *interactiveContextDiagnosticSnapshot {
 			s := interactiveContextDiagnosticFromRequest(req)
 			return &s
 		}(),
 		outerSession: outerSession, threadKey: firstWords(req), sessionID: resumeID, images: images,
-		searchName: req.SearchTool, schema: len(req.Schema) > 0, readOnlyRecovery: readOnly,
+		historyArchive: req.historyArchive,
+		searchName:     req.SearchTool, schema: len(req.Schema) > 0, readOnlyRecovery: readOnly,
 		safeguards: bytes.Clone(req.Safeguards), safeguardBeta: req.SafeguardBeta, cacheMarked: cacheMarked}
 	if b.toolJournal != nil && os.Getenv("MAGPIE_CLAUDE_FIRST_TURN_ANCHOR") == "1" &&
 		outerSession != "" && resumeID == "" && !readOnly && len(req.Messages) == 1 && req.Messages[0].Role == "user" {
@@ -1534,6 +1547,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	for _, tool := range interactiveTools(req, len(images) > 0) {
 		run.tools[tool.Name] = true
 	}
+	run.reading.Add(2)
 	run.timer = time.AfterFunc(interactiveActiveLongest, run.abort)
 	segment := run.attach()
 	b.mu.Lock()
@@ -1546,29 +1560,24 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 		b.liveOuter[interactiveSessionStateKey(owner, outerSession)] = run
 	}
 	b.mu.Unlock()
-	tree, err := startTree(cmd)
+	err = run.launch()
+	_, _ = stdoutW.Close(), stderrW.Close() // the wrapper owns its inherited ends
 	if err != nil {
+		_, _ = stdout.Close(), stderr.Close()
 		run.finish()
 		return nil, nil, err
 	}
-	drained := make(chan struct{})
-	finished := make(chan struct{})
-	run.mu.Lock()
-	run.tree = tree
-	run.interactiveDone = finished
-	run.mu.Unlock()
 	// Capture the interval now. Tests may shorten the package default, while
 	// an already-running PTY must keep the interval it was launched with.
 	go run.keepInteractiveAlive(finished, interactiveAliveEvery)
-	go func() { _, _ = io.Copy(&lockedWriter{run: run}, io.LimitReader(stderr, 1<<20)) }()
-	go func() { run.readInteractiveOneTurn(stdout); close(drained) }()
 	go func() {
-		// exec.Wait closes StdoutPipe. Reap only after the reader drains,
-		// otherwise a fast wrapper can turn a valid response into EBADF.
-		<-drained
-		_ = tree.Wait()
-		close(finished)
-		run.finish()
+		defer run.reading.Done()
+		_, _ = io.Copy(&lockedWriter{run: run}, io.LimitReader(stderr, 1<<20))
+		_, _ = io.Copy(io.Discard, stderr)
+	}()
+	go func() {
+		defer run.reading.Done()
+		run.readInteractiveOneTurn(stdout)
 	}()
 	return run, segment, nil
 }
@@ -1628,7 +1637,7 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 			activeCallback := r.pending[id] != nil
 			continued := r.resuming && r.segment != nil
 			ready := !r.closed && r.segment != nil && r.tools[name] &&
-				name != interactiveImageTool && name != r.searchName
+				!interactivePrivateTool(name) && name != r.searchName
 			r.mu.Unlock()
 			if !activeCallback {
 				return // the native MCP caller cancelled before handoff
@@ -1917,7 +1926,7 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 						pmu.Unlock()
 						return
 					}
-					if name == interactiveImageTool || internalSearch {
+					if interactivePrivateTool(name) || internalSearch {
 						// Magpie answers this private MCP call itself. It must never
 						// appear as a tool request the outer client has to execute.
 						continue

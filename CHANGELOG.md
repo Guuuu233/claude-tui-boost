@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.20-fork.1 — paginated imports and native-turn cleanup
+
+- Route oversized imported text through a private run-scoped MCP archive reader with exact UTF-8 pages, retaining short inline imports, original client messages, tool records and private image handling.
+- Keep private archive tools available during live external-tool continuations and independent compaction, with explicit unavailable responses outside the archive's native run.
+- Coordinate native process reaping with bounded output draining and allow conversation wait cancellation during idle/parked teardown while preserving live ownership.
+- Rebuild all eight Runtime/MCP Helper targets and publish the installable fork package with the updated platform inventory.
+
 ## 0.2.19-fork.1 — complete bundled history-import and supervisor fixes
 
 - Ship rebuilt Runtime and MCP Helper executables for Linux/macOS, amd64/arm64, from the fork source with Go 1.27.2.

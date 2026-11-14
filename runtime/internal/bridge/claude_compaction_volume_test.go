@@ -99,3 +99,45 @@ func TestCompactionLargeHistoricalTranscriptPreservesStructureWithoutTextExpansi
 		t.Fatal("building isolated compaction changed the original request")
 	}
 }
+
+// Dedicated compaction must enter the same paged transport while leaving the
+// main conversation's clean native checkpoint in place.
+func TestCompactionHistoryImportOversizedInputUsesPrivateArchive(t *testing.T) {
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+	_, runs := scWrapper(t)
+	rt, b := scRuntime(t)
+	scSaveClean(t, b, "inner-main-kept", false)
+	body, err := json.Marshal(map[string]any{
+		"model": "claude-opus-5-5", "max_tokens": 64, "system": compactSystemTest,
+		"tools": []map[string]any{{"name": "Bash", "input_schema": map[string]any{"type": "object"}}},
+		"messages": []map[string]any{
+			{"role": "user", "content": strings.Repeat("COMPACTION_ARCHIVE αβ\n", 40000)},
+			{"role": "assistant", "content": []map[string]any{{"type": "tool_use", "id": "old-summary-call", "name": "Bash", "input": map[string]any{"command": "HISTORICAL_ACTION_ONLY"}}}},
+			{"role": "user", "content": []map[string]any{
+				{"type": "tool_result", "tool_use_id": "old-summary-call", "content": "HISTORICAL_SUMMARY_RESULT"},
+				{"type": "text", "text": "Your task is to create a detailed summary of the conversation so far."},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out := scServe(t, rt, scOuter, string(body))
+	if code != 200 || !strings.Contains(out, "SC_ANSWER") {
+		t.Fatalf("oversized compaction did not start: %d %.300s", code, out)
+	}
+	started := onlyRun(t, runs())
+	if len(started["stdin"]) >= interactiveHistoricalBootstrapMaxBytes || !strings.Contains(started["stdin"], interactiveArchiveTool) {
+		t.Fatal("oversized compaction did not submit a bounded archive-reading prompt")
+	}
+	if started["resume"] != "" || started["seed.jsonl"] != "" || strings.Contains(started["stdin"], "HISTORICAL_ACTION_ONLY") {
+		t.Fatal("paged compaction resumed the main session or exposed old actions as the new task")
+	}
+	if !strings.Contains(started["stdin"], "Summarize the loaded archival conversation") {
+		t.Fatal("compaction lost its current summarization request")
+	}
+	saved, ok, err := b.loadInteractiveSession(scOwner, scOuter)
+	if err != nil || !ok || saved.Dirty || saved.SessionID != "inner-main-kept" {
+		t.Fatalf("compaction changed the main checkpoint: ok=%t err=%v", ok, err)
+	}
+}

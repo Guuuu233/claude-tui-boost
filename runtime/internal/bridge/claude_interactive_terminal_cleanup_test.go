@@ -20,6 +20,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -460,4 +461,307 @@ func TestTerminalCleanupConcurrentStartStaysExclusive(t *testing.T) {
 	b.abortAll()
 }
 
-var _ = fmt.Sprintf // keep fmt imported for future scripted cases
+// Explicit tool-free recovery preserves its original input even when import
+// mode would page an ordinary prompt of the same size through a private tool.
+func TestTerminalCleanupReadOnlyOversizedImportStaysToolFree(t *testing.T) {
+	if runtimeGOOS() == "windows" {
+		t.Skip("requires a Unix shell wrapper")
+	}
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+	dir := tcDir(t)
+	capture := filepath.Join(dir, "readonly-prompt")
+	release := filepath.Join(dir, "readonly-release")
+	t.Setenv("MAGPIE_TC_READONLY_CAPTURE", capture)
+	t.Setenv("MAGPIE_TC_READONLY_RELEASE", release)
+	olWrapper(t, dir, "tc-readonly-oversized", "#!/bin/sh\n"+
+		"cat > \"$MAGPIE_TC_READONLY_CAPTURE\"\n"+
+		"printf '%s\\n' '{\"type\":\"assistant\",\"uuid\":\"a1\",\"session_id\":\"inner-tc-readonly\",\"message\":{\"id\":\"m1\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"READONLY_ANSWER\"}]}}'\n"+
+		"printf '%s\\n' '{\"type\":\"result\",\"session_id\":\"inner-tc-readonly\",\"stop_reason\":\"end_turn\"}'\n"+
+		"while [ ! -f \"$MAGPIE_TC_READONLY_RELEASE\" ]; do sleep 0.02; done\n")
+	b := newSubscriptionBridge()
+	t.Cleanup(func() { bridges.Delete(b) })
+	prompt := strings.Repeat("synthetic tool-free recovery context\n", interactiveHistoricalBootstrapMaxBytes/32+1)
+	if len(prompt) <= interactiveHistoricalBootstrapMaxBytes {
+		t.Fatal("synthetic recovery input must exceed the ordinary paste budget")
+	}
+	req := &Request{Model: olModel, Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: prompt}}}}}
+	run, events, err := b.startInteractiveWithPrompt(context.Background(), req, olModel, "", "owner-tc-readonly", "outer-tc-readonly", prompt, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(release, []byte("release"), 0o600)
+		run.abort()
+	})
+	limit := time.NewTimer(5 * time.Second)
+	defer limit.Stop()
+	var answered bool
+readReply:
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				break readReply
+			}
+			if ev.Kind == KError || ev.Kind == KToolStart {
+				t.Fatalf("tool-free recovery emitted an unexpected event: %+v", ev)
+			}
+			answered = answered || ev.Kind == KText && ev.Text == "READONLY_ANSWER"
+		case <-limit.C:
+			t.Fatal("synthetic tool-free recovery did not answer")
+		}
+	}
+	if !answered {
+		t.Fatal("tool-free recovery answer was missing")
+	}
+	got, err := os.ReadFile(capture)
+	if err != nil || string(got) != prompt {
+		t.Fatalf("tool-free recovery input changed: bytes=%d want=%d err=%v", len(got), len(prompt), err)
+	}
+	if strings.Contains(string(got), interactiveArchiveTool) {
+		t.Fatal("tool-free recovery received private archive instructions")
+	}
+	toolJSON, err := os.ReadFile(filepath.Join(run.tmp, "tools.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools []bridgeTool
+	if err := json.Unmarshal(toolJSON, &tools); err != nil || len(tools) != 0 {
+		t.Fatalf("tool-free recovery offered tools: count=%d err=%v", len(tools), err)
+	}
+	run.mu.Lock()
+	hasArchive, allowed := run.historyArchive != nil, len(run.tools)
+	run.mu.Unlock()
+	if hasArchive || allowed != 0 || req.historyArchive != nil {
+		t.Fatalf("tool-free recovery retained private readers: archive=%t allowed=%d", hasArchive, allowed)
+	}
+	for _, name := range []string{interactiveArchiveTool, interactiveImageTool, "write_file"} {
+		body, _ := json.Marshal(map[string]any{"tool_call_id": "readonly-probe", "name": name, "arguments": map[string]any{"page": 0}})
+		callback := httptest.NewRequest(http.MethodPost, "/_magpie/claude-mcp/native", strings.NewReader(string(body)))
+		callback.SetPathValue("token", run.token)
+		response := httptest.NewRecorder()
+		b.mcpCall(response, callback)
+		var result mcpToolResult
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != http.StatusOK || !result.IsError {
+			t.Fatalf("tool-free recovery accepted callback %s: status=%d err=%v", name, response.Code, err)
+		}
+	}
+}
+
+// A wrapper that exits without a terminal row may leave a same-group child
+// holding stdout. Reaping must reach the group cleanup before waiting for EOF.
+func TestTerminalCleanupExitWithoutResultReapsInheritedOutput(t *testing.T) {
+	if runtimeGOOS() == "windows" {
+		t.Skip("requires a Unix shell and process group")
+	}
+	dir := tcDir(t)
+	holderFile := filepath.Join(dir, "output-holder")
+	t.Setenv("MAGPIE_TC_OUTPUT_HOLDER", holderFile)
+	olWrapper(t, dir, "tc-inherited-output", "#!/bin/sh\n"+
+		"cat >/dev/null\n"+
+		"sleep 30 &\n"+
+		"printf '%s\\n' \"$!\" > \"$MAGPIE_TC_OUTPUT_HOLDER\"\n"+
+		"exit 0\n")
+	b := newSubscriptionBridge()
+	t.Cleanup(func() { bridges.Delete(b) })
+	owner, outer := "owner-tc-inherited", "outer-tc-inherited"
+	req := &Request{Model: olModel, Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "synthetic cleanup request"}}}}}
+	run, events, err := b.startInteractiveWithPrompt(context.Background(), req, olModel, "", owner, outer, "synthetic cleanup request", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		run.mu.Lock()
+		tree := run.tree
+		run.mu.Unlock()
+		if tree != nil {
+			tree.Kill()
+		}
+		select {
+		case <-run.interactiveDone:
+		case <-time.After(3 * time.Second):
+			t.Error("synthetic output holder cleanup did not finish")
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if data, readErr := os.ReadFile(holderFile); readErr == nil {
+			var holder int
+			if _, err := fmt.Sscan(string(data), &holder); err != nil || holder < 1 {
+				t.Fatalf("invalid synthetic output holder: %q", data)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("wrapper did not create its synthetic output holder")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case <-run.interactiveDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("wrapper exit without a result stayed blocked behind inherited stdout")
+	}
+	var missingResult bool
+	for ev := range events {
+		if ev.Kind == KError && strings.Contains(ev.Text, "without a terminal result") {
+			missingResult = true
+		}
+	}
+	if !missingResult {
+		t.Fatal("abnormal wrapper exit did not report the missing terminal result")
+	}
+	deadline = time.Now().Add(time.Second)
+	for b.interactiveOuterOwner(owner, outer) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("reaped abnormal wrapper retained the outer owner")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !b.claimInteractiveOuterTurn(owner, outer) {
+		t.Fatal("abnormal wrapper cleanup retained the HTTP turn claim")
+	}
+	b.releaseInteractiveOuterTurn(owner, outer)
+}
+
+// WaitDelay also bounds stdin copying when the wrapper exits before reading
+// its prompt and its child explicitly retains the original input descriptor.
+func TestTerminalCleanupExitWithInheritedStdinIsBounded(t *testing.T) {
+	if runtimeGOOS() == "windows" {
+		t.Skip("requires a Unix shell and inherited descriptors")
+	}
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "0")
+	dir := tcDir(t)
+	olWrapper(t, dir, "tc-inherited-input", "#!/bin/sh\n"+
+		"exec 3<&0\n"+
+		"sleep 30 <&3 3<&- &\n"+
+		"exit 0\n")
+	b := newSubscriptionBridge()
+	t.Cleanup(func() { bridges.Delete(b) })
+	owner, outer := "owner-tc-input", "outer-tc-input"
+	req := &Request{Model: olModel, Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "synthetic input cleanup"}}}}}
+	prompt := strings.Repeat("synthetic unread input\n", 1<<16)
+	run, events, err := b.startInteractiveWithPrompt(context.Background(), req, olModel, "", owner, outer, prompt, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		run.mu.Lock()
+		tree := run.tree
+		run.mu.Unlock()
+		if tree != nil {
+			tree.Kill()
+		}
+		select {
+		case <-run.interactiveDone:
+		case <-time.After(3 * time.Second):
+			t.Error("synthetic input holder cleanup did not finish")
+		}
+	})
+	select {
+	case <-run.interactiveDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wrapper exit stayed blocked by stdin copying after WaitDelay")
+	}
+	var missingResult bool
+	for ev := range events {
+		if ev.Kind == KError && strings.Contains(ev.Text, "without a terminal result") {
+			missingResult = true
+		}
+	}
+	if !missingResult {
+		t.Fatal("incomplete input consumption hid the missing terminal result")
+	}
+	deadline := time.Now().Add(time.Second)
+	for b.interactiveOuterOwner(owner, outer) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("bounded stdin cleanup retained the outer owner")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Cancelling a next-turn wait must return while the old wrapper is still
+// inside its SIGINT grace window, without releasing that wrapper's owner.
+func TestTerminalCleanupLiteTurnCancelDuringAbort(t *testing.T) {
+	if runtimeGOOS() == "windows" {
+		t.Skip("requires a Unix shell and signal handler")
+	}
+	grace := interactiveAbortGrace
+	interactiveAbortGrace = 3 * time.Second
+	t.Cleanup(func() { interactiveAbortGrace = grace })
+	dir := tcDir(t)
+	interrupted := filepath.Join(dir, "interrupted")
+	t.Setenv("MAGPIE_TC_INTERRUPTED", interrupted)
+	olWrapper(t, dir, "tc-cancel-abort", "#!/bin/sh\n"+
+		"trap 'printf interrupted > \"$MAGPIE_TC_INTERRUPTED\"' INT\n"+
+		"cat >/dev/null\n"+
+		"printf '%s\\n' '{\"type\":\"assistant\",\"uuid\":\"t1\",\"session_id\":\"inner-tc-cancel\",\"message\":{\"id\":\"m1\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"mcp__magpie__write_file\",\"input\":{\"path\":\"a\"}}]}}'\n"+
+		"while [ ! -f \"$DAV1878_PARK_RELEASE\" ]; do sleep 0.02; done\n")
+	b := newSubscriptionBridge()
+	t.Cleanup(func() { bridges.Delete(b) })
+	owner, outer := "owner-tc-cancel", "outer-tc-cancel"
+	parked := olParkedFirstTurn(t, dir, &runtimeTUI{bridge: b}, b, owner, outer)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan bool, 1)
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		claimed := b.takeLiteTurn(ctx, owner, outer)
+		if claimed {
+			b.releaseInteractiveOuterTurn(owner, outer)
+		}
+		result <- claimed
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = os.WriteFile(filepath.Join(dir, "release-"+outer), []byte("release"), 0o600)
+		parked.mu.Lock()
+		tree := parked.tree
+		parked.mu.Unlock()
+		if tree != nil {
+			tree.Kill()
+		}
+		select {
+		case <-parked.interactiveDone:
+		case <-time.After(3 * time.Second):
+			t.Error("synthetic cancelled wrapper cleanup did not finish")
+		}
+		select {
+		case <-waitDone:
+		case <-time.After(3 * time.Second):
+			t.Error("cancelled next-turn waiter remained blocked")
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(interrupted); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("next-turn cleanup did not interrupt the parked wrapper")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case claimed := <-result:
+		if claimed {
+			t.Fatal("cancelled waiter acquired the next turn")
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("cancelled next-turn waiter blocked inside wrapper abort")
+	}
+	select {
+	case <-parked.interactiveDone:
+		t.Fatal("wrapper exited before its controlled grace window was released")
+	default:
+	}
+	if b.interactiveOuterOwner(owner, outer) != parked {
+		t.Fatal("cancelled waiter released the still-running wrapper's owner")
+	}
+	if !b.claimInteractiveOuterTurn(owner, outer) {
+		t.Fatal("cancelled waiter retained the HTTP turn claim")
+	}
+	b.releaseInteractiveOuterTurn(owner, outer)
+}

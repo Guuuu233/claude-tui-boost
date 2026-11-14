@@ -148,21 +148,10 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 	}
 	run, events, err := rt.bridge.startLite(r.Context(), req, model, owner, outerSession)
 	if err != nil {
-		var tooLarge *claudeHistoryImportTooLargeError
-		if errors.As(err, &tooLarge) {
-			return writeError(w, protoAnthropic, http.StatusRequestEntityTooLarge, err.Error()), err.Error()
-		}
 		return writeError(w, protoAnthropic, http.StatusBadGateway, "Claude Code: "+err.Error()), err.Error()
 	}
 	run.mu.Lock()
-	keepImage := len(run.images) > 0
-	run.tools = map[string]bool{}
-	for _, t := range req.Tools {
-		run.tools[t.Name] = true
-	}
-	if keepImage {
-		run.tools[interactiveImageTool] = true
-	}
+	run.resetAllowedToolsLocked(req)
 	if search.Name != "" && config.SearchHandler != nil {
 		run.search, run.searchName = config.SearchHandler, search.Name
 	}
@@ -353,7 +342,11 @@ func (b *subscriptionBridge) letGoSuperseded(r *subscriptionRun) {
 // of the conversation is still generating after liteTurnWait.
 func (b *subscriptionBridge) takeLiteTurn(ctx context.Context, owner, outerSession string) bool {
 	deadline := time.Now().Add(liteTurnWait)
+	var stopping *subscriptionRun
 	for {
+		if ctx.Err() != nil {
+			return false
+		}
 		if b.claimInteractiveOuterTurn(owner, outerSession) {
 			old := b.interactiveOuterOwner(owner, outerSession)
 			if old == nil {
@@ -362,9 +355,12 @@ func (b *subscriptionBridge) takeLiteTurn(ctx context.Context, owner, outerSessi
 			old.mu.Lock()
 			idle := old.terminalDelivered || !old.parkedAt.IsZero()
 			old.mu.Unlock()
-			if idle {
+			if idle && old != stopping {
 				log.Printf("Claude interactive stopped the conversation's idle or parked run for its next request")
-				old.abort()
+				stopping = old
+				// Reaping retains the native owner while this request remains
+				// free to stop waiting on cancellation or its existing deadline.
+				go old.abort()
 			}
 			b.releaseInteractiveOuterTurn(owner, outerSession)
 		}

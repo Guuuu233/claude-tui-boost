@@ -93,6 +93,8 @@ type Request struct {
 	// seedHistory is the conversation a native run resumes from, written as
 	// a Claude Code session before it starts (claude_lite.go).
 	seedHistory []Message
+	// historyArchive is the oversized import's private, run-local MCP input.
+	historyArchive *claudeHistoryArchive
 	// replayKey is the request as it arrived (liteReplayKey), kept before
 	// serveLite adds its own tools so the reply is recorded under it too.
 	replayKey string

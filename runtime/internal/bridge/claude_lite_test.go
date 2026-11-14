@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const scOwner = "claude-tui\x00default"
@@ -677,5 +678,285 @@ func TestLiteSignedRequestSizeLimit(t *testing.T) {
 	code, out := post(32<<20 + 1)
 	if code != http.StatusRequestEntityTooLarge || !strings.Contains(out, `"request_too_large"`) {
 		t.Fatalf("an oversized request answered %d %.200s", code, out)
+	}
+}
+
+// Read through the exposed page protocol, preserving every byte after the
+// metadata line and following its explicit final-page marker.
+func historyArchiveTestText(t *testing.T, archive *claudeHistoryArchive) string {
+	t.Helper()
+	if archive == nil {
+		t.Fatal("expected a private input archive")
+	}
+	var joined strings.Builder
+	for page := 0; page < 10000; page++ {
+		args, _ := json.Marshal(map[string]int{"page": page})
+		result := archive.result(args)
+		if result.IsError || len(result.Content) != 1 {
+			t.Fatalf("archive page %d returned an error", page)
+		}
+		text, ok := result.Content[0]["text"].(string)
+		if !ok {
+			t.Fatalf("archive page %d has no text", page)
+		}
+		header, chunk, ok := strings.Cut(text, "\n")
+		var meta struct {
+			Page       int  `json:"page"`
+			TotalPages int  `json:"total_pages"`
+			TotalBytes int  `json:"total_bytes"`
+			StartByte  int  `json:"start_byte"`
+			EndByte    int  `json:"end_byte"`
+			HasMore    bool `json:"has_more"`
+			NextPage   *int `json:"next_page"`
+		}
+		if !ok || json.Unmarshal([]byte(header), &meta) != nil {
+			t.Fatalf("archive page %d has invalid metadata", page)
+		}
+		if meta.Page != page || meta.StartByte != joined.Len() || meta.EndByte-meta.StartByte != len(chunk) {
+			t.Fatalf("archive page %d has a gap or overlap", page)
+		}
+		if !utf8.ValidString(chunk) || len(chunk) == 0 || len(chunk) > 8<<10 {
+			t.Fatalf("archive page %d has invalid UTF-8 or size %d", page, len(chunk))
+		}
+		joined.WriteString(chunk)
+		if !meta.HasMore {
+			if meta.NextPage != nil || meta.TotalPages != page+1 || meta.TotalBytes != joined.Len() {
+				t.Fatal("archive final page has an invalid end marker or total")
+			}
+			return joined.String()
+		}
+		if meta.NextPage == nil || *meta.NextPage != page+1 {
+			t.Fatalf("archive page %d has an invalid next page", page)
+		}
+	}
+	t.Fatal("archive exceeded its finite page count")
+	return ""
+}
+
+func TestLiteHistoryImportPagedArchivePreservesRecords(t *testing.T) {
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+	output := strings.Repeat("归档 αβ 🎯\n", 50000)
+	req := &Request{Model: "claude-opus-5-5", System: "SYSTEM_SENTINEL", Messages: []Message{
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "HISTORICAL_REQUEST"}}},
+		{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: "old-call", Name: "Read", Args: json.RawMessage(`{"path":"synthetic.txt"}`)}}},
+		{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: "old-call", IsError: true, Text: output}, {Kind: Text, Text: "CURRENT_TASK_SENTINEL"}}},
+	}}
+	before, _ := json.Marshal(req.Messages)
+	seeded, prompt, _, err := liteSeed(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded.historyArchive == nil || len(seeded.seedHistory) != 0 || len(prompt) >= interactiveHistoricalBootstrapMaxBytes {
+		t.Fatal("oversized import did not become a bounded private archive prompt")
+	}
+	if !strings.Contains(prompt, interactiveArchiveTool) || !strings.Contains(prompt, "CURRENT_TASK_SENTINEL") {
+		t.Fatal("archive prompt lost the reader or current request")
+	}
+	archive := historyArchiveTestText(t, seeded.historyArchive)
+	for _, marker := range []string{"HISTORICAL_REQUEST", "SYSTEM_SENTINEL", "<current_user_request>", "CURRENT_TASK_SENTINEL"} {
+		if !strings.Contains(archive, marker) {
+			t.Fatalf("archive lost %s", marker)
+		}
+	}
+	foundCall, foundResult := false, false
+	for _, line := range strings.Split(archive, "\n") {
+		var row struct {
+			Role    string `json:"role"`
+			Content struct {
+				Type      string            `json:"type"`
+				ID        string            `json:"id"`
+				ToolUseID string            `json:"tool_use_id"`
+				IsError   bool              `json:"is_error"`
+				Input     map[string]string `json:"input"`
+				Content   []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"content"`
+		}
+		if json.Unmarshal([]byte(line), &row) != nil {
+			continue
+		}
+		if row.Content.Type == "tool_use" {
+			foundCall = row.Role == "assistant" && row.Content.ID == "old-call" && row.Content.Input["path"] == "synthetic.txt"
+		}
+		if row.Content.Type == "tool_result" {
+			foundResult = row.Role == "user" && row.Content.ToolUseID == "old-call" && row.Content.IsError && len(row.Content.Content) == 1 && row.Content.Content[0].Text == output
+		}
+	}
+	if !foundCall || !foundResult {
+		t.Fatal("archive changed the historical tool pairing, error flag or output bytes")
+	}
+	after, _ := json.Marshal(req.Messages)
+	if string(before) != string(after) || req.historyArchive != nil {
+		t.Fatal("import changed the caller's original request")
+	}
+}
+
+func TestLiteHistoryImportOversizedCurrentIsPaged(t *testing.T) {
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+	current := strings.Repeat("CURRENT λ🎯\n", 50000)
+	req := &Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: current}}}}}
+	seeded, prompt, _, err := liteSeed(req)
+	if err != nil || seeded == nil {
+		t.Fatalf("oversized current request was rejected: %v", err)
+	}
+	if len(prompt) >= interactiveHistoricalBootstrapMaxBytes || strings.Contains(prompt, current[:1000]) {
+		t.Fatal("oversized current request remained in the native paste")
+	}
+	archive := historyArchiveTestText(t, seeded.historyArchive)
+	_, tail, ok := strings.Cut(archive, "<current_user_request>\n")
+	body, _, ended := strings.Cut(tail, "\n</current_user_request>")
+	if !ok || !ended || body != current {
+		t.Fatal("oversized current request lost its complete original text")
+	}
+}
+
+func TestLiteHistoryImportShortPromptAndInvalidPages(t *testing.T) {
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+	req := &Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "SHORT_CURRENT"}}}}}
+	seeded, prompt, _, err := liteSeed(req)
+	if err != nil || seeded.historyArchive != nil || !strings.Contains(prompt, "SHORT_CURRENT") {
+		t.Fatalf("short import changed path: %v", err)
+	}
+	for _, tool := range interactiveTools(seeded, false) {
+		if tool.Name == interactiveArchiveTool {
+			t.Fatal("short import offered a private archive reader")
+		}
+	}
+	archive := newClaudeHistoryArchive("PRIVATE_SYNTHETIC_CONTENT")
+	for _, args := range []string{`{}`, `{"page":-1}`, `{"page":1}`, `{"page":"0"}`, `{"page":0.5}`, `null`} {
+		if result := archive.result(json.RawMessage(args)); !result.IsError {
+			t.Fatalf("invalid page request was accepted: %s", args)
+		}
+	}
+}
+
+func TestLiteHistoryImportExactCheckpointStillResumes(t *testing.T) {
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+	TestLiteExactCheckpointResumes(t)
+}
+
+func TestLiteHistoryImportParkedBranchUsesPagedRebuild(t *testing.T) {
+	t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+	b := newSubscriptionBridge()
+	defer bridges.Delete(b)
+	run := &subscriptionRun{interactive: true, owner: scOwner, outerSession: scOuter, model: "claude-opus-5-5", closed: true, parkedAt: time.Now()}
+	b.noteLiteParked(run)
+	req := &Request{Messages: []Message{
+		{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: "parked-call", Name: "Read", Args: json.RawMessage(`{}`)}}},
+		{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: "parked-call", Text: strings.Repeat("LATE_RESULT\n", 60000)}}},
+	}}
+	if _, _, _, copied := b.liteParkedBranch(scOwner, scOuter, run.model, req); copied {
+		t.Fatal("import mode copied the parked native session")
+	}
+	seeded, _, _, err := liteSeed(req)
+	if err != nil || seeded.historyArchive == nil {
+		t.Fatalf("late tool result did not enter paged rebuilding: %v", err)
+	}
+	if archive := historyArchiveTestText(t, seeded.historyArchive); !strings.Contains(archive, "parked-call") || !strings.Contains(archive, liteContinueText) {
+		t.Fatal("paged late-result rebuild lost its tool result or current continuation")
+	}
+}
+
+// First turns and verified native resumes skip history rebuilding. Their
+// actual pasted prompt must still receive the same oversized-input transport.
+func TestLiteHistoryImportOversizedFirstAndResumeUsePagedPaste(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		name := "first-user-turn"
+		if resume {
+			name = "verified-native-resume"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", "1")
+			_, runs := scWrapper(t)
+			rt, b := scRuntime(t)
+			current := strings.Repeat("CURRENT_PASTE λ🎯\n", 40000)
+			messages := []map[string]any{{"role": "user", "content": current}}
+			bodyMap := map[string]any{"model": "claude-opus-5-5", "max_tokens": 64}
+			if resume {
+				scSaveClean(t, b, "inner-oversized-resume", false)
+				messages = append([]map[string]any{{"role": "user", "content": "先读一下配置"}, {"role": "assistant", "content": "配置已读"}}, messages...)
+			} else {
+				bodyMap["system"] = "EXTERNAL_FIRST_TURN_INSTRUCTIONS"
+			}
+			bodyMap["messages"] = messages
+			body, err := json.Marshal(bodyMap)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := parseAnthropic(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := json.Marshal(parsed)
+			var originalPrompt string
+			if resume {
+				originalPrompt, _, err = renderInteractiveTurnPromptWithImages(parsed.Messages[2:])
+			} else {
+				originalPrompt, _, err = renderInteractiveFirstPromptWithImages(parsed)
+			}
+			if err != nil || len(originalPrompt) <= interactiveHistoricalBootstrapMaxBytes {
+				t.Fatalf("expected an oversized real paste prompt: %v", err)
+			}
+			prepared, bounded := prepareClaudeHistoryArchivePrompt(parsed, originalPrompt)
+			if prepared == parsed || prepared.historyArchive == nil || len(bounded) >= interactiveHistoricalBootstrapMaxBytes {
+				t.Fatal("actual paste preparation failed to create a bounded private archive")
+			}
+			if historyArchiveTestText(t, prepared.historyArchive) != originalPrompt {
+				t.Fatal("archive changed the rendered native input or its external instructions")
+			}
+			after, _ := json.Marshal(parsed)
+			if string(before) != string(after) || parsed.historyArchive != nil {
+				t.Fatal("paste preparation changed the original request used for native matching")
+			}
+			code, out := scServe(t, rt, scOuter, string(body))
+			if code != http.StatusOK || !strings.Contains(out, "SC_ANSWER") {
+				t.Fatalf("oversized native input was rejected: %d %.300s", code, out)
+			}
+			started := onlyRun(t, runs())
+			if len(started["stdin"]) >= interactiveHistoricalBootstrapMaxBytes || !strings.Contains(started["stdin"], interactiveArchiveTool) || strings.Contains(started["stdin"], current[:1000]) {
+				t.Fatal("actual native wrapper still received the oversized input paste")
+			}
+			if started["seed.jsonl"] != "" {
+				t.Fatal("ordinary first or resumed turn unexpectedly created a history transcript")
+			}
+			if resume && started["resume"] != "inner-oversized-resume" {
+				t.Fatal("oversized current turn lost its verified native resume identity")
+			}
+			if !resume && started["resume"] != "" {
+				t.Fatal("first user turn unexpectedly resumed another native session")
+			}
+		})
+	}
+}
+
+func TestLiteHistoryImportPasteBudgetBoundaryAndOptOut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled string
+		bytes   int
+		paged   bool
+	}{
+		{name: "short", enabled: "1", bytes: 128},
+		{name: "exact-budget", enabled: "1", bytes: 512 << 10},
+		{name: "one-byte-over", enabled: "1", bytes: (512 << 10) + 1, paged: true},
+		{name: "existing-opt-out", enabled: "0", bytes: (512 << 10) + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MAGPIE_CLAUDE_HISTORY_IMPORT", tc.enabled)
+			original := &Request{Messages: []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "ORIGINAL_CURRENT"}}}}}
+			prompt := strings.Repeat("x", tc.bytes)
+			prepared, bounded := prepareClaudeHistoryArchivePrompt(original, prompt)
+			if tc.paged {
+				if prepared == original || prepared.historyArchive == nil || len(bounded) >= 512<<10 || historyArchiveTestText(t, prepared.historyArchive) != prompt {
+					t.Fatal("input over the paste budget lost its complete paged representation")
+				}
+			} else if prepared != original || bounded != prompt || prepared.historyArchive != nil {
+				t.Fatal("short, exact-budget or opted-out input changed its existing path")
+			}
+			if original.historyArchive != nil || original.Messages[0].Parts[0].Text != "ORIGINAL_CURRENT" {
+				t.Fatal("paste budget handling changed caller-owned state")
+			}
+		})
 	}
 }

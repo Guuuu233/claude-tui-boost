@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "packageVersion": "0.2.19-fork.1",
+  "packageVersion": "0.2.20-fork.1",
   "goVersion": "1.27.2",
   "assets": [
     {
@@ -15,28 +15,28 @@
       "kind": "runtime",
       "platform": "darwin",
       "arch": "amd64",
-      "bytes": 12492432
+      "bytes": 12513872
     },
     {
       "path": "bin/magpie-tui-runtime.darwin-arm64",
       "kind": "runtime",
       "platform": "darwin",
       "arch": "arm64",
-      "bytes": 11674146
+      "bytes": 11691618
     },
     {
       "path": "bin/magpie-tui-runtime.linux-amd64",
       "kind": "runtime",
       "platform": "linux",
       "arch": "amd64",
-      "bytes": 12253627
+      "bytes": 12275035
     },
     {
       "path": "bin/magpie-tui-runtime.linux-arm64",
       "kind": "runtime",
       "platform": "linux",
       "arch": "arm64",
-      "bytes": 11326999
+      "bytes": 11329167
     },
     {
       "path": "bin/magpie-tui-mcp-helper.darwin-amd64",

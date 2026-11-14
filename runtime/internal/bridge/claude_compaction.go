@@ -60,7 +60,7 @@ func claudeDesktopCompactionRequest(req *Request) *Request {
 	out.SafeguardBeta = ""
 	toolInstructions := "Do not continue any historical task and do not use tools."
 	if claudeHistoryImportEnabled() {
-		toolInstructions = "Historical tasks remain archival context. Use only mcp__magpie__" + interactiveImageTool + " to view attached images required for the summary. All other tools remain unavailable."
+		toolInstructions = "Historical tasks remain archival context. Use the private mcp__magpie__" + interactiveArchiveTool + " reader when a paginated input archive is offered, and mcp__magpie__" + interactiveImageTool + " to view attached images required for the summary. All other tools remain unavailable."
 	}
 	out.Messages = []Message{{Role: "user", Parts: []Part{{Kind: Text, Text: "Summarize the loaded archival conversation according to its final compaction instructions. Return only a detailed <summary></summary>. Preserve user requests and constraints, decisions, paths, results and pending work. " + toolInstructions}}}}
 	return &out
