@@ -1,3 +1,33 @@
+# v0.2.20-fork.2 — shared managed Runtime across plugin hosts
+
+Install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.2`. This managed-JavaScript lifecycle release reuses the eight Linux/macOS, amd64/arm64 Runtime and MCP Helper executables from `0.2.20-fork.1`; Go source and executable builds retain that version's evidence.
+
+## Changes
+
+- Each plugin host holds its own authenticated attach client to one account-owned supervisor and Runtime. Hosts using the same saved account and normalized configuration-directory path can overlap while their conversations retain the Runtime's existing session isolation.
+- The canonical owner runs in its own Unix session with stdin, stdout and stderr detached from the creating host. Retiring a host releases its connection, while the Runtime serves remaining authenticated hosts. The final authenticated disconnect starts bounded cleanup; an unauthenticated socket supplies zero lifetime references.
+- Startup-only coordination serializes state ownership initialization and the complete stale-claim recovery decision. It uses the existing parent's BigInt device/inode metadata, while private DrvFS discovery is specific to the established state directory. Live or ambiguous claims, foreign state, symlinks and account/configuration mismatches retain their protections.
+- IPC consumes complete frames while retaining partial data, preserving the fixed Runtime lifecycle error when `ready` and `error` arrive together or across chunks. Original state-path checks remain in force.
+
+## Verification evidence
+
+- Both final JavaScript syntax checks exited 0. Thirteen selected existing cases passed: two supervisor cases, five first-connect cases and six Windows/WSL simulation cases. Test files stayed unchanged; excluded cases and the full business suite were outside this run.
+- The recorded Node two-host lifecycle scenario passed individually, covering one Runtime, concurrent synthetic sessions, normal first-host retirement and last-client cleanup. The final ordinary-ESM Bun command passed all five remaining scenarios and exited 0. It covered stale-claim dual cold starts after a confirmed terminated synthetic choosing participant, whole-session SIGKILL of the first host, protection refusals, Runtime error propagation and cleanup. The surviving host's in-flight request returned HTTP 200 from the same Runtime PID after that SIGKILL; the owner's three standard streams pointed to `/dev/null`.
+- Final helper and frame checks exited 0. They covered BigInt directory metadata, a shared parent startup domain, distinct sibling-state lookup roots, directory-generation observations, metadata failures, and coalesced/fragmented `ready` plus `error` frames. Independent static review supports the concurrent ordering argument; individual executions establish their observed interleavings.
+- Identity derivation was replaced with fixed synthetic values, and the Runtime was a local HTTP fixture. Real saved-account authentication, production identity operations, Go signing and native Claude inference were outside execution coverage. Native macOS, WSL/DrvFS and special-filesystem identity/alias behavior still need target-environment evidence; the six WSL simulation cases are a separate layer.
+
+Publication uses a tagged-source archive and the GitHub Release API. The release commit carries `[skip ci]`; GitHub Actions publishing and host-compatibility workflows retain their existing definitions and were outside this publication.
+
+## Updating and operational scope
+
+For the first upgrade from a supervisor without shared attachment, let active requests finish and retire the previous host at an idle boundary before starting the shared path. Preserve its claim, account directory, Claude profile and conversation state. Update `src/managed-runtime.mjs` and `scripts/managed-runtime-supervisor.mjs` together; the existing Runtime binary remains usable, and a complete plugin installation carries both JavaScript files with the reused platform executables.
+
+Use the same normalized configuration-directory spelling across hosts, including on case-insensitive volumes. Physical startup coordination protects claim handling; attachment continues to require the original state-path match. During authenticated leases the shared owner keeps one Runtime endpoint and launch environment. Apply changed Runtime environment or executable settings to the next owner after all host clients release their connections at an idle boundary. An owner failure is explicit; automatic restart, cache recovery, endpoint migration and cross-alias attachment are separate work. Normal per-conversation busy responses and native-session/tool safety boundaries remain unchanged.
+
+This release publishes installable files; service rollout remains an operator action at an idle boundary. Existing opt-in history import and recovery settings retain their defaults and scope.
+
+## Previous fork version
+
 # v0.2.20-fork.1 — paginated history import and native-turn cleanup
 
 Install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.1`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment. The release supplies rebuilt Runtime and MCP Helper executables for Linux/macOS, amd64/arm64.

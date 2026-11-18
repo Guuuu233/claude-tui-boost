@@ -51,17 +51,21 @@ Magpie-compatible Agent / SDK client
        Interactive Claude Code
 ```
 
-## Fork install — 0.2.20-fork.1
+## Fork install — 0.2.20-fork.2
 
-This fork bundles rebuilt Runtime and MCP Helper executables for Linux/macOS on amd64/arm64. The installed package contains both the opt-in history import and Linux zombie-supervisor recovery fix. Install from the fork through Magpie's GitHub plugin entry:
+This fork packages the managed-supervisor JavaScript update with Linux/macOS, amd64/arm64 Runtime and MCP Helper executables reused from `0.2.20-fork.1`. Existing history import and Linux zombie-supervisor handling remain available; this release requires zero Go rebuilds. Install from the fork through Magpie's GitHub plugin entry:
 
 ```sh
 magpie plugin add github:liangxyz/claude-tui-boost
 ```
 
-In Magpie's web UI, install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.1`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment to enable archive-style rebuilding. Verified continuations preserve native session identity and history matching; an oversized current input uses the same private paging path while keeping its resume ID. Imports within the 512 KiB UTF-8 paste budget retain the inline path. Larger imports use a short first user prompt and a run-private paginated MCP reader for the complete text, including an oversized current request. Inline images retain their existing private MCP reader. See [Recovery](RECOVERY.md) for lifecycle, reading costs and limits.
+In Magpie's web UI, install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.2`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment to enable archive-style rebuilding. Verified continuations preserve native session identity and history matching; an oversized current input uses the same private paging path while keeping its resume ID. Imports within the 512 KiB UTF-8 paste budget retain the inline path. Larger imports use a short first user prompt and a run-private paginated MCP reader for the complete text, including an oversized current request. Inline images retain their existing private MCP reader. See [Recovery](RECOVERY.md) for lifecycle, reading costs and limits.
 
-For Docker, preserve the existing `/config` mount and enable `init: true` (Compose) or `--init` (docker run) when recreating the container. Update at an idle boundary and preserve the selected Claude profile. Previously installed local `bin/magpie-tui-runtime` overrides take precedence over platform files; the package's rebuilt platform Runtime is the normal managed entry.
+Overlapping plugin hosts using the same saved account and normalized configuration-directory path now share one authenticated managed Runtime. Each host holds its own connection; retiring one releases only that connection, and the last authenticated client triggers cleanup. Conversations retain their existing native-session boundaries. Use the same directory spelling across hosts; automatic owner restart, endpoint migration and cross-alias attachment remain separate work. See [release notes](RELEASE_NOTES.md) for the isolated Node/Bun evidence, 13 selected cases and real-platform limits.
+
+For the first upgrade from an older exclusive supervisor, finish active work and retire the old host at an idle boundary before starting the shared path. Preserve the claim, account directory and selected Claude profile; both managed JavaScript files are updated together, while the existing Runtime binary remains usable.
+
+For Docker, preserve the existing `/config` mount and enable `init: true` (Compose) or `--init` (docker run) when recreating the container. Previously installed local `bin/magpie-tui-runtime` overrides take precedence over platform files; the package's platform Runtime is the normal managed entry.
 
 `package-assets.json` is the fork's executable inventory: package/toolchain version, target format/architecture and byte counts. Packing checks inventory completeness, regular executable files and target headers; Linux startup and installation behavior are checked separately. Content digests are outside this fork's packaging contract. Cross-compiled macOS and arm64 artifacts still require native-environment acceptance for those targets.
 

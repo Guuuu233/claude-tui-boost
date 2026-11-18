@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.20-fork.2 — shared managed Runtime across plugin hosts
+
+- Give each plugin host an authenticated attach client to one account-owned Runtime supervisor, using the same saved account and normalized configuration-directory path. Independent conversations retain their existing Runtime session boundaries.
+- Keep the owner in an independent Unix session with all three standard streams detached from the creating host. A retiring host releases only its connection; the last authenticated client triggers bounded Runtime cleanup.
+- Serialize state ownership initialization and stale-claim recovery with startup-only coordination keyed by the existing parent directory's BigInt device/inode metadata. Keep private DrvFS discovery specific to the established state directory, while retaining live/unknown claim, account, configuration and path protections.
+- Preserve fixed lifecycle errors across IPC frame coalescing and fragmentation. Keep original state-path checks and the existing Runtime endpoint for the lifetime of the shared owner.
+- Reuse all eight Runtime/MCP Helper executables from `0.2.20-fork.1`; this release changes managed JavaScript and documentation, with zero Go source changes or rebuilds.
+- Verification: 13 selected existing cases passed; the Node two-host lifecycle passed as an individually recorded scenario; the final five-scenario Bun command and helper/frame checks exited 0. Identity derivation used fixed synthetic values and the Runtime was a local HTTP fixture. Real account authentication, native model inference, full-suite reruns and native macOS/WSL/DrvFS checks remain separate from this evidence.
+- Update at an idle boundary. Existing pre-shared supervisors retain their active work and claim until retirement; successful attachment requires the same configuration-directory spelling. Automatic owner recovery, endpoint migration and cross-alias attachment remain outside this release.
+
 ## 0.2.20-fork.1 — paginated imports and native-turn cleanup
 
 - Route oversized imported text through a private run-scoped MCP archive reader with exact UTF-8 pages, retaining short inline imports, original client messages, tool records and private image handling.

@@ -1,5 +1,6 @@
-// scripts/managed-runtime-supervisor.mjs — a tiny owned child of the plugin
-// host that supervises exactly one magpie-tui-runtime process.
+// scripts/managed-runtime-supervisor.mjs — account-owned runtime supervision.
+// Managed hosts use --attach clients; one --shared-owner holds the Runtime
+// and its claim until the last authenticated client disconnects.
 //
 //   node scripts/managed-runtime-supervisor.mjs \
 //     --runtime <entry> [--runtime-arg <arg>]... \
@@ -19,16 +20,19 @@
 //     mismatching key is refused as conflicting owned state.
 //   * Once the handshake files (key, models.json, port) exist, writes
 //     --ready-file and holds the child.
-//   * Its own stdin EOF (the plugin host process is gone or SIGKILLed) or
-//     SIGTERM → SIGTERM the runtime, wait a bounded grace, then SIGKILL.
+//   * An attach client's stdin EOF or SIGTERM releases only its connection.
+//     The shared owner ends the Runtime after its last client disconnects.
+//     Standalone supervision keeps the original stdin/SIGTERM lifetime.
 //   * Runtime exits before ready or after ready → the supervisor exits
 //     accordingly; it never restarts, double-spawns or orphans.
 //   * Prints nothing the runtime writes; the key file is never read, never
 //     logged, never copied out of the state dir.
 import { spawn } from "node:child_process";
 import { runtimeEnvironment } from "../src/runtime-environment.mjs";
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createConnection, createServer } from "node:net";
+import { fileURLToPath } from "node:url";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, uptime } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -93,6 +97,11 @@ function stageDrvFsExecutable(p) {
 }
 
 const argv = process.argv.slice(2);
+const attachMode = argv[0] === "--attach";
+const sharedOwnerMode = argv[0] === "--shared-owner";
+const SHARED_PROTOCOL = 1;
+const ATTACH_WAIT_MS = 30000;
+const IPC_LINE_BYTES = 16384;
 const opt = name => {
   const i = argv.indexOf(name);
   return i >= 0 ? argv[i + 1] : null;
@@ -146,9 +155,419 @@ function writePrivateAtomic(path, content) {
   }
 }
 
+function sharedConfig() {
+  const value = name => {
+    const index = runtimeArgs.indexOf(name);
+    return index < 0 ? undefined : runtimeArgs[index + 1];
+  };
+  return {
+    profile: value("--claude-config-dir") || process.env.CLAUDE_CONFIG_DIR || "",
+    models: [...new Set((value("--models") || "claude-tui").split(",").filter(Boolean))],
+  };
+}
+
+function privateIPCPath(path, kind) {
+  checkNoSymlinkComponents(path, kind);
+  const st = lstatSync(path);
+  if ((st.mode & 0o077) !== 0 || (process.getuid && st.uid !== process.getuid())) {
+    throw new Error("shared Runtime discovery requires account-private paths");
+  }
+  if (kind === "socket" && !st.isSocket()) throw new Error("shared Runtime endpoint is not a local socket");
+}
+
+function directoryIdentity(path) {
+  if (typeof path !== "string" || !isAbsolute(path)) throw new Error("shared Runtime state path must be absolute");
+  checkNoSymlinkComponents(path, "directory");
+  const st = statSync(path, { bigint: true });
+  if (!st.isDirectory() || typeof st.dev !== "bigint" || typeof st.ino !== "bigint" || st.dev < 0n || st.ino <= 0n) {
+    throw new Error("shared Runtime filesystem did not provide a usable directory identity");
+  }
+  return `directory-${st.dev.toString()}-${st.ino.toString()}`;
+}
+
+function nativeAccountRoot(directory = stateDir) {
+  const identity = directoryIdentity(directory);
+  const uid = process.getuid?.();
+  if (!Number.isSafeInteger(uid)) throw new Error("shared Runtime coordination requires Unix or WSL");
+  const root = join(realpathSync("/tmp"), `magpie-tui-${uid}`);
+  checkNoSymlinkComponents(root, "directory");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  privateIPCPath(root, "directory");
+  // Directory metadata keys coordination/discovery lookup only.
+  // Attachment retains the original state-path and managed-account checks.
+  const account = join(root, "directories", identity);
+  checkNoSymlinkComponents(account, "directory");
+  mkdirSync(account, { recursive: true, mode: 0o700 });
+  privateIPCPath(account, "directory");
+  return account;
+}
+
+function sharedDiscoveryFile() {
+  const account = resolve(stateDir).startsWith("/mnt/") ? nativeAccountRoot() : dirname(resolve(stateDir));
+  return join(account, ".managed-runtime.json");
+}
+
+// Each startup announces a unique choosing slot before assigning its ticket.
+// Atomic publication and (ticket, slot-name) ordering serialize claim recovery;
+// only the slot creator removes it. Dead participants can be ignored safely.
+async function acquireStartupTurn() {
+  const directory = join(nativeAccountRoot(dirname(resolve(stateDir))), "startup");
+  checkNoSymlinkComponents(directory, "directory");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  privateIPCPath(directory, "directory");
+  const own = mkdtempSync(join(directory, `slot-${process.pid}-`));
+  chmodSync(own, 0o700);
+  const name = basename(own);
+  const boot = readLinuxBootId();
+  let released = false;
+  const releaseTurn = () => {
+    if (released) return;
+    released = true;
+    process.removeListener("exit", releaseTurn);
+    try { rmSync(own, { recursive: true, force: true }); } catch {}
+  };
+  process.once("exit", releaseTurn);
+  const participants = () => {
+    const found = [];
+    for (const entry of readdirSync(directory)) {
+      const match = /^slot-([1-9][0-9]*)-/.exec(entry);
+      if (!match || entry === name) continue;
+      const pid = Number(match[1]);
+      if (isProcessDead(pid)) continue;
+      const slot = join(directory, entry);
+      let record;
+      try {
+        privateIPCPath(slot, "directory");
+        const file = join(slot, "ticket.json");
+        privateIPCPath(file, "file");
+        if (statSync(file).size > 4096) throw new Error("startup ticket is oversized");
+        record = JSON.parse(readFileSync(file, "utf8"));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw new Error("account startup coordination contains an unreadable ticket");
+        try { privateIPCPath(slot, "directory"); }
+        catch (slotError) {
+          if (slotError?.code === "ENOENT") continue;
+          throw new Error("account startup coordination could not prove a participant's exit");
+        }
+        found.push({ name: entry, choosing: true, ticket: 0 });
+        continue;
+      }
+      if (record?.pid !== pid || typeof record.boot !== "string" || typeof record.choosing !== "boolean" ||
+          !Number.isSafeInteger(record.ticket) || record.ticket < 0 || (!record.choosing && record.ticket === 0)) {
+        throw new Error("account startup coordination contains an invalid ticket");
+      }
+      if (boot && record.boot && record.boot !== boot) continue;
+      found.push({ name: entry, choosing: record.choosing, ticket: record.ticket });
+    }
+    return found;
+  };
+  const publish = (choosing, ticket) => writePrivateAtomic(join(own, "ticket.json"), JSON.stringify({ pid: process.pid, boot, choosing, ticket }) + "\n");
+  try {
+    publish(true, 0);
+    const maximum = participants().reduce((highest, other) => Math.max(highest, other.ticket), 0);
+    const ticket = maximum + 1;
+    if (!Number.isSafeInteger(ticket)) throw new Error("account startup ticket range is exhausted");
+    publish(false, ticket);
+    const deadline = Date.now() + ATTACH_WAIT_MS;
+    while (participants().some(other => other.choosing || other.ticket < ticket || (other.ticket === ticket && other.name < name))) {
+      if (Date.now() >= deadline) throw new Error("account Runtime startup coordination stayed busy for 30 seconds; preserve its active work");
+      await new Promise(resolveWait => setTimeout(resolveWait, 20));
+    }
+    return releaseTurn;
+  } catch (error) { releaseTurn(); throw error; }
+}
+
+function readSharedOwner(claim) {
+  const discovery = sharedDiscoveryFile();
+  privateIPCPath(dirname(discovery), "directory");
+  let raw;
+  try {
+    privateIPCPath(discovery, "file");
+    raw = readFileSync(discovery, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  if (Buffer.byteLength(raw) > IPC_LINE_BYTES) throw new Error("shared Runtime discovery is oversized");
+  let found;
+  try { found = JSON.parse(raw); }
+  catch { throw new Error("shared Runtime discovery is malformed"); }
+  if (found?.claim !== claim) return null; // a winning owner may still be publishing
+  if (found.version !== SHARED_PROTOCOL || found.ownerPid !== Number(claim.split(/\s+/)[0]) ||
+      found.stateDir !== resolve(stateDir) || typeof found.socketPath !== "string" ||
+      !isAbsolute(found.socketPath) || Buffer.byteLength(found.socketPath) > 100) {
+    throw new Error("shared Runtime discovery does not match the account's live owner");
+  }
+  try {
+    privateIPCPath(dirname(found.socketPath), "directory");
+    privateIPCPath(found.socketPath, "socket");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  return found;
+}
+
+function refuseLiveClaim(prior) {
+  // A concurrent shared owner won the existing claim. Its waiting clients
+  // attach to that winner; this process has started no Runtime of its own.
+  if (sharedOwnerMode && prior.trim().split(/\s+/).at(-1) === "shared-v1") process.exit(0);
+  die(`state-dir ${stateDir} already has a live supervisor claim (${prior || "unreadable"}); refusing to double-start`);
+}
+
+async function runAttachClient() {
+  let connection;
+  const leave = () => {
+    connection?.destroy();
+    process.exit(0);
+  };
+  if (!process.stdin.readable) return;
+  process.stdin.resume();
+  process.stdin.once("end", leave);
+  process.stdin.once("close", leave);
+  process.on("SIGTERM", leave);
+  process.on("SIGINT", leave);
+  process.once("exit", () => {
+    try {
+      checkNoSymlinkComponents(readyFile, "file");
+      if (JSON.parse(readFileSync(readyFile, "utf8")).supervisorPid === process.pid) rmSync(readyFile);
+    } catch {}
+  });
+  const deadline = Date.now() + ATTACH_WAIT_MS;
+  let launched = false;
+  let launchFailed = false;
+  let ownerExit = null;
+  while (Date.now() < deadline) {
+    let claim = "";
+    try {
+      checkNoSymlinkComponents(liveFile, "file");
+      claim = readFileSync(liveFile, "utf8").trim();
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (!claim || isStaleSupervisorClaim(claim)) {
+      if (!launched) {
+        launched = true;
+        const owner = spawn(process.execPath, [fileURLToPath(import.meta.url), "--shared-owner", ...argv.slice(1)], {
+          env: process.env, detached: true, stdio: ["ignore", "ignore", "ignore"],
+        });
+        owner.once("error", () => { launchFailed = true; });
+        owner.once("exit", code => { ownerExit = code ?? 1; });
+        owner.unref();
+      } else if (launchFailed || (ownerExit !== null && ownerExit !== 0)) {
+        throw new Error(`canonical Runtime owner could not establish its private attachment endpoint (code ${ownerExit ?? "spawn"})`);
+      }
+    } else {
+      if (claim.split(/\s+/).at(-1) !== "shared-v1") {
+        throw new Error("account state already has a live supervisor claim without shared attachment support; keep its active work and update at an idle boundary");
+      }
+      const found = readSharedOwner(claim);
+      if (found) {
+        try {
+          await holdSharedConnection(found, deadline - Date.now(), socket => { connection = socket; });
+          return;
+        } catch (error) {
+          if (error?.code !== "OWNER_ENDPOINT_CLOSED") throw error;
+          let current = "";
+          try { current = readFileSync(liveFile, "utf8").trim(); }
+          catch (readError) { if (readError?.code !== "ENOENT") throw readError; }
+          // Only the observed startup/shutdown window may be waited out.
+          // A live owner with an unchanged endpoint remains protected.
+          if (current === claim && readSharedOwner(current)) throw error;
+        }
+      }
+    }
+    await new Promise(resolveWait => setTimeout(resolveWait, 60));
+  }
+  throw new Error("shared Runtime attachment did not become ready within 30 seconds");
+}
+
+function holdSharedConnection(found, wait, setConnection) {
+  return new Promise((_, reject) => {
+    const socket = createConnection(found.socketPath);
+    setConnection(socket);
+    let text = "";
+    let ready = false;
+    let settled = false;
+    const fail = (message, code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      reject(Object.assign(new Error(message), code ? { code } : {}));
+    };
+    const timer = setTimeout(() => fail("shared Runtime attachment handshake timed out"), Math.max(1, wait));
+    socket.once("connect", () => {
+      socket.write(JSON.stringify({
+        type: "attach", version: SHARED_PROTOCOL, claim: found.claim,
+        proof: managedKey, config: sharedConfig(),
+      }) + "\n");
+    });
+    socket.setEncoding("utf8");
+    socket.on("data", chunk => {
+      if (settled) return;
+      text += chunk;
+      let newline;
+      while ((newline = text.indexOf("\n")) >= 0) {
+        const line = text.slice(0, newline);
+        text = text.slice(newline + 1);
+        if (Buffer.byteLength(line) > IPC_LINE_BYTES) return fail("shared Runtime attachment reply is oversized");
+        let reply;
+        try { reply = JSON.parse(line); }
+        catch { return fail("shared Runtime attachment reply is malformed"); }
+        if (reply?.type === "error") return fail(reply.message || "shared Runtime attachment was refused");
+        if (ready || reply?.type !== "ready" || reply.ownerPid !== found.ownerPid || reply.claim !== found.claim ||
+            reply.stateDir !== resolve(stateDir) || !Number.isSafeInteger(reply.pid) || reply.pid < 1 ||
+            !Number.isInteger(reply.port) || reply.port < 1 || reply.port > 65535) {
+          return fail("shared Runtime endpoint does not match the authenticated owner");
+        }
+        try {
+          checkNoSymlinkComponents(liveFile, "file");
+          if (readFileSync(liveFile, "utf8").trim() !== found.claim) throw new Error("owner changed");
+          writePrivateAtomic(readyFile, JSON.stringify({
+            supervisorPid: process.pid, ownerSupervisorPid: found.ownerPid, ownerClaim: found.claim,
+            pid: reply.pid, port: reply.port, stateDir: reply.stateDir,
+          }) + "\n");
+        } catch { return fail("shared Runtime owner or private readiness path changed during attachment"); }
+        ready = true;
+        clearTimeout(timer);
+      }
+      if (Buffer.byteLength(text) > IPC_LINE_BYTES) return fail("shared Runtime attachment reply is oversized");
+    });
+    socket.once("error", error => fail("shared Runtime owner is not accepting attachments; preserve active work and retry at an idle boundary",
+      !ready && ["ENOENT", "ECONNREFUSED"].includes(error?.code) ? "OWNER_ENDPOINT_CLOSED" : undefined));
+    socket.once("close", () => fail(ready ? "shared Runtime owner disconnected" : "shared Runtime owner closed the attachment handshake",
+      ready ? undefined : "OWNER_ENDPOINT_CLOSED"));
+  });
+}
+
+async function openSharedOwnerControl(onEmpty, onFailure) {
+  const discovery = sharedDiscoveryFile();
+  privateIPCPath(dirname(discovery), "directory");
+  const socketDir = mkdtempSync(join(realpathSync("/tmp"), "mgtui-ipc-"));
+  chmodSync(socketDir, 0o700);
+  const socketPath = join(socketDir, "owner.sock");
+  const authenticated = new Set();
+  const sockets = new Set();
+  const expectedProof = Buffer.from(managedKey || "");
+  const expectedConfig = sharedConfig();
+  let ready = null;
+  let closing = false;
+  let firstClient = false;
+  let published = "";
+  let bootstrap;
+  const sendReady = socket => { if (ready && !socket.destroyed) socket.write(JSON.stringify(ready) + "\n"); };
+  const server = createServer(socket => {
+    if (closing) { socket.destroy(); return; }
+    sockets.add(socket);
+    let text = "";
+    let handled = false;
+    const timeout = setTimeout(() => socket.destroy(), 5000);
+    socket.setEncoding("utf8");
+    socket.on("error", () => {});
+    socket.once("close", () => {
+      clearTimeout(timeout);
+      sockets.delete(socket);
+      if (authenticated.delete(socket) && authenticated.size === 0 && firstClient && !closing) onEmpty();
+    });
+    const refuse = message => {
+      handled = true;
+      clearTimeout(timeout);
+      socket.end(JSON.stringify({ type: "error", message }) + "\n", () => socket.destroy());
+    };
+    socket.on("data", chunk => {
+      if (handled) { socket.destroy(); return; }
+      text += chunk;
+      if (Buffer.byteLength(text) > IPC_LINE_BYTES) { socket.destroy(); return; }
+      const newline = text.indexOf("\n");
+      if (newline < 0) return;
+      let request;
+      try { request = JSON.parse(text.slice(0, newline)); }
+      catch { refuse("shared Runtime attachment request is malformed"); return; }
+      text = "";
+      const proof = Buffer.from(typeof request?.proof === "string" ? request.proof : "");
+      if (closing || request?.type !== "attach" || request.version !== SHARED_PROTOCOL || request.claim !== claimId ||
+          proof.length !== expectedProof.length || expectedProof.length === 0 || !timingSafeEqual(proof, expectedProof)) {
+        refuse("shared Runtime attachment did not prove the owned account");
+        return;
+      }
+      const config = request.config;
+      if (config?.profile !== expectedConfig.profile || !Array.isArray(config.models) || config.models.length === 0 ||
+          !config.models.every(model => expectedConfig.models.includes(model))) {
+        refuse("shared Runtime profile or models differ from this account's active launch; finish active work before changing its configuration");
+        return;
+      }
+      handled = true;
+      clearTimeout(timeout);
+      clearTimeout(bootstrap);
+      firstClient = true;
+      authenticated.add(socket);
+      sendReady(socket);
+    });
+  });
+  const dispose = () => {
+    closing = true;
+    clearTimeout(bootstrap);
+    try { server.close(); } catch {}
+    for (const socket of sockets) socket.destroy();
+    try {
+      checkNoSymlinkComponents(discovery, "file");
+      if (published && readFileSync(discovery, "utf8") === published) rmSync(discovery);
+    } catch {}
+    try { rmSync(socketDir, { recursive: true, force: true }); } catch {}
+  };
+  process.once("exit", dispose);
+  try {
+    await new Promise((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, () => { server.removeListener("error", rejectListen); resolveListen(); });
+    });
+    chmodSync(socketPath, 0o600);
+    server.on("error", onFailure);
+    published = JSON.stringify({ version: SHARED_PROTOCOL, ownerPid: process.pid, claim: claimId, socketPath, stateDir: resolve(stateDir) }) + "\n";
+    writePrivateAtomic(discovery, published);
+    bootstrap = setTimeout(() => { if (!firstClient) onEmpty(); }, ATTACH_WAIT_MS);
+  } catch (error) { dispose(); throw error; }
+  return {
+    ready(descriptor) {
+      if (closing) return;
+      ready = { type: "ready", ownerPid: process.pid, claim: claimId, ...descriptor };
+      for (const socket of authenticated) sendReady(socket);
+    },
+    report(message) {
+      if (authenticated.size === 0) return Promise.resolve();
+      return new Promise(resolveReport => {
+        let pending = authenticated.size;
+        const timer = setTimeout(resolveReport, 200);
+        const delivered = () => {
+          if (--pending === 0) { clearTimeout(timer); resolveReport(); }
+        };
+        // Fixed lifecycle reasons carry no request bodies or account proof.
+        const line = JSON.stringify({ type: "error", message }) + "\n";
+        for (const socket of authenticated) {
+          if (socket.destroyed) { delivered(); continue; }
+          try { socket.end(line, delivered); }
+          catch { delivered(); }
+        }
+      });
+    },
+    close() {
+      closing = true;
+      clearTimeout(bootstrap);
+      try {
+        checkNoSymlinkComponents(discovery, "file");
+        if (published && readFileSync(discovery, "utf8") === published) rmSync(discovery);
+      } catch {}
+      try { server.close(); } catch {}
+      for (const socket of sockets) if (!authenticated.has(socket)) socket.destroy();
+    },
+  };
+}
+
 if (!runtime || !isAbsolute(runtime)) die("--runtime must be an absolute entry path");
 if (!stateDir || !isAbsolute(stateDir)) die("--state-dir must be absolute");
 if (!readyFile || !isAbsolute(readyFile)) die("--ready-file must be absolute");
+if (sharedOwnerMode && !managedKey) die("--shared-owner requires the account's managed proof");
 if (runtimeArgs.some(a => a === "--serve" || a === "--port-file" || a === "--key-file" || a === "--models-file" || a === "--state-dir")) {
   die("runtime args must not override the owned handshake flags");
 }
@@ -168,10 +587,20 @@ const inside = (p, base) => {
 // A state dir must stay under the ready-file's own directory (the
 // per-account root the caller allocated); outside paths are not owned state.
 if (!inside(stateDir, dirname(resolve(readyFile)))) die("state-dir escapes the supervisor root; refusing");
+const liveFile = join(stateDir, ".managed-live");
+if (attachMode) {
+  if (!managedKey) die("--attach requires the account's managed proof");
+  try { await runAttachClient(); }
+  catch (error) { die(error.message); }
+  process.exit(0);
+}
+
+let releaseStartup;
+try { releaseStartup = await acquireStartupTurn(); }
+catch (error) { die(error.message); }
 
 const ownerHash = sha256("managed-owner/v1\0" + (managedKey ?? (runtime + "\0" + resolve(stateDir))));
 const marker = join(stateDir, ".managed-owner");
-const liveFile = join(stateDir, ".managed-live");
 for (const file of [marker, liveFile, join(stateDir, "key"), join(stateDir, "port"), join(stateDir, "models.json")]) {
   assertNoSymlinkComponents(file, "file");
 }
@@ -207,7 +636,7 @@ catch (error) { die(`owned state-dir permissions could not be secured: ${error.m
 // belong to a dead process or previous OS boot is reclaimed, while any live
 // or ambiguous claim is refused. Released when OUR runtime child exits.
 const bootId = readLinuxBootId();
-const claimId = `${process.pid} ${Date.now()}${bootId ? " " + bootId : ""}`;
+const claimId = `${process.pid} ${Date.now()}${bootId ? " " + bootId : ""}${sharedOwnerMode ? " shared-v1" : ""}`;
 try {
   assertNoSymlinkComponents(liveFile, "file");
   writeFileSync(liveFile, claimId + "\n", { flag: "wx", mode: 0o600 });
@@ -220,14 +649,15 @@ try {
       rmSync(liveFile, { force: true });
       writeFileSync(liveFile, claimId + "\n", { flag: "wx", mode: 0o600 });
     } catch {
-      die(`state-dir ${stateDir} already has a live supervisor claim (${prior || "unreadable"}); refusing to double-start`);
+      refuseLiveClaim(prior);
     }
   } else {
-    die(`state-dir ${stateDir} already has a live supervisor claim (${prior || "unreadable"}); refusing to double-start`);
+    refuseLiveClaim(prior);
   }
 }
 const release = () => { try { if (readFileSync(liveFile, "utf8").trim() === claimId) rmSync(liveFile, { force: true }); } catch {} };
 process.once("exit", release);
+releaseStartup();
 
 const keyFile = join(stateDir, "key");
 const portFile = join(stateDir, "port");
@@ -302,29 +732,43 @@ const child = spawn(stageDrvFsExecutable(runtime), [
 });
 
 let stopping = false;
+let sharedControl = null;
 let childExit = null;
 child.once("exit", (code, signal) => { childExit = { code, signal }; });
 
 const GRACE_MS = 7000;
 const killTimer = () => setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, GRACE_MS);
 
-function shutdown(exitCode) {
+function shutdown(exitCode, reason) {
   if (stopping) return;
   stopping = true;
+  sharedControl?.close();
+  const notification = reason && sharedControl ? sharedControl.report(reason) : Promise.resolve();
   try { child.kill("SIGTERM"); } catch {}
   const killer = killTimer();
   const done = new Promise(res => {
     if (childExit) return res();
     child.once("exit", res);
   });
-  done.then(() => { clearTimeout(killer); release(); process.exit(exitCode); });
+  done.then(async () => {
+    clearTimeout(killer);
+    await notification;
+    release();
+    process.exit(exitCode);
+  });
 }
 
-// Parent-host retirement: stdin EOF means the Bun host that spawned us is
-// gone (host restart, update, removal, or SIGKILL). The runtime must not be
-// orphaned — terminate it and leave.
-if (process.stdin.readable) {
-  process.stdin.resume(); // keep the FD open so close is observable
+// Each managed host owns only an attach client. The canonical owner lives
+// while any authenticated client remains, independently of the first host.
+if (sharedOwnerMode) {
+  try {
+    sharedControl = await openSharedOwnerControl(() => shutdown(0), () => shutdown(1, "canonical Runtime owner attachment endpoint failed"));
+  } catch (error) {
+    console.error(`managed-supervisor: private attachment endpoint could not be opened: ${error.message}`);
+    shutdown(1);
+  }
+} else if (process.stdin.readable) {
+  process.stdin.resume();
   process.stdin.once("end", () => shutdown(0));
   process.stdin.once("close", () => shutdown(0));
 } else {
@@ -340,10 +784,13 @@ const poll = setInterval(() => {
   if (stopping) { clearInterval(poll); return; }
   if (childExit) {
     clearInterval(poll);
+    stopping = true;
     console.error(`managed-supervisor: runtime exited before ready (code ${childExit.code})`);
     try { rmSync(readyFile, { force: true }); } catch {}
-    release();
-    process.exit(1);
+    sharedControl?.close();
+    const notification = sharedControl?.report(`Runtime exited before ready (code ${childExit.code})`) ?? Promise.resolve();
+    notification.then(() => { release(); process.exit(1); });
+    return;
   }
   try {
     if (existsSync(keyFile) && existsSync(modelsFile) && existsSync(portFile)) {
@@ -353,7 +800,7 @@ const poll = setInterval(() => {
         if (error?.code === "MANAGED_PATH_ERROR") {
           clearInterval(poll);
           console.error(`managed-supervisor: unsafe runtime handshake path: ${error.message}`);
-          shutdown(1);
+          shutdown(1, "Runtime readiness path failed its ownership checks");
           return;
         }
         throw error;
@@ -364,23 +811,33 @@ const poll = setInterval(() => {
       clearInterval(poll);
       if (!Number.isSafeInteger(child.pid) || child.pid < 1) {
         console.error("managed-supervisor: runtime child did not expose an owned pid");
-        shutdown(1);
+        shutdown(1, "Runtime child did not expose an owned PID");
         return;
       }
-      try { writePrivateAtomic(readyFile, JSON.stringify({ supervisorPid: process.pid, pid: child.pid, port: portNumber, stateDir: resolve(stateDir) }) + "\n"); }
+      try {
+        const descriptor = { pid: child.pid, port: portNumber, stateDir: resolve(stateDir) };
+        if (sharedControl) sharedControl.ready(descriptor);
+        else writePrivateAtomic(readyFile, JSON.stringify({ supervisorPid: process.pid, ...descriptor }) + "\n");
+      }
       catch (error) {
         clearInterval(poll);
         console.error(`managed-supervisor: ready descriptor could not be written safely: ${error.message}`);
-        shutdown(1);
+        shutdown(1, "Runtime readiness could not be published safely");
         return;
       }
-      child.once("exit", code => { release(); process.exit(code ?? 0); });
+      child.once("exit", code => {
+        if (stopping) return; // shutdown owns its requested exit code and cleanup
+        stopping = true;
+        sharedControl?.close();
+        const notification = sharedControl?.report(`Runtime process exited (code ${code ?? "signal"})`) ?? Promise.resolve();
+        notification.then(() => { release(); process.exit(code ?? 0); });
+      });
       return;
     }
   } catch {}
   if (Date.now() > deadline) {
     clearInterval(poll);
     console.error("managed-supervisor: runtime handshake timed out");
-    shutdown(1);
+    shutdown(1, "Runtime handshake timed out");
   }
 }, 60);

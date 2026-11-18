@@ -262,6 +262,7 @@ export function createManagedHooks({
     // (0600 regular file, 64 hex). It never leaves the state dir.
     const args = [
       mapPath(SUPERVISOR),
+      "--attach",
       "--runtime", mapPath(entry),
       "--state-dir", targetStateDir,
       "--ready-file", mapPath(readyFile),
@@ -292,7 +293,12 @@ export function createManagedHooks({
             ? (Number.isSafeInteger(ready?.supervisorPid) && ready.supervisorPid >= 1)
             : (Number.isSafeInteger(child.pid) && ready?.supervisorPid === child.pid);
           const stateMatches = ready?.stateDir === resolve(stateDir) || ready?.stateDir === targetStateDir;
-          if (!pidMatches ||
+          const claimPath = join(stateDir, ".managed-live");
+          assertNoSymlinkPath(claimPath, "file");
+          const ownerClaim = (await readFile(claimPath, "utf8")).trim();
+          const ownerMatches = Number.isSafeInteger(ready?.ownerSupervisorPid) && ready.ownerSupervisorPid >= 1 &&
+            ready.ownerSupervisorPid === Number(ownerClaim.split(/\s+/)[0]) && ready.ownerClaim === ownerClaim;
+          if (!pidMatches || !ownerMatches ||
               !Number.isSafeInteger(ready?.pid) || ready.pid < 1 ||
               !Number.isInteger(ready?.port) || ready.port < 1 || ready.port > 65535 ||
               !stateMatches) {
@@ -328,6 +334,8 @@ export function createManagedHooks({
           return {
             url: `http://127.0.0.1:${ready.port}/v1/`,
             models,
+            // This child is an attach client. Stopping it releases this
+            // host's reference; other authenticated hosts keep the Runtime.
             stop: () => { try { child.kill("SIGTERM"); } catch {} },
           };
         } catch (error) {
