@@ -137,6 +137,9 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 	}
 	run, events, err := rt.bridge.startLite(r.Context(), req, model, owner, outerSession)
 	if err != nil {
+		if errors.Is(err, errRuntimeClosing) {
+			return writeRuntimeClosing(w, protoAnthropic)
+		}
 		return writeError(w, protoAnthropic, http.StatusBadGateway, "Claude Code: "+err.Error()), err.Error()
 	}
 	run.mu.Lock()

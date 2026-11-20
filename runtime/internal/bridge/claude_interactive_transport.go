@@ -1463,6 +1463,10 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 		}
 	}()
 	if resumeID != "" && outerSession != "" && !seeded {
+		if b.closing.Load() {
+			clean()
+			return nil, nil, errRuntimeClosing
+		}
 		// Before the resume's first possible side effect, the canonical
 		// checkpoint becomes dirty. In ledger mode the lease above prevents
 		// a second Runtime from dirtying another process's clean result.

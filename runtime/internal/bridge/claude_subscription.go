@@ -192,11 +192,12 @@ var (
 const parkedMost = 16
 
 type subscriptionRun struct {
-	bridge *subscriptionBridge
-	token  string
-	model  string
-	cmd    *exec.Cmd
-	tree   *procTree // cmd once started, with all it starts
+	bridge      *subscriptionBridge
+	token       string
+	model       string
+	cmd         *exec.Cmd
+	tree        *procTree // cmd once started, with all it starts
+	termination atomic.Pointer[runTermination]
 	// the read ends of Claude Code's output, and their readers
 	outputs []*os.File
 	reading sync.WaitGroup
@@ -3482,7 +3483,7 @@ func (b *subscriptionBridge) launchRun(run *subscriptionRun) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closing.Load() {
-		return errors.New("Runtime is shutting down")
+		return errRuntimeClosing
 	}
 	b.runs[run.token] = run
 	if run.outerSession != "" {
@@ -3490,6 +3491,13 @@ func (b *subscriptionBridge) launchRun(run *subscriptionRun) error {
 		b.liveOuter[interactiveSessionStateKey(run.owner, run.outerSession)] = run
 	}
 	return run.launch()
+}
+
+// runTermination is published once, after the child starts.
+type runTermination struct {
+	tree      *procTree
+	interrupt *os.Process
+	done      <-chan struct{}
 }
 
 // launch starts the run's agent, to end with all it starts.
@@ -3501,6 +3509,11 @@ func (r *subscriptionRun) launch() error {
 	r.mu.Lock()
 	r.tree = t
 	done := r.interactiveDone
+	termination := &runTermination{tree: t, done: done}
+	if r.interactive && done != nil {
+		termination.interrupt = r.cmd.Process
+	}
+	r.termination.Store(termination)
 	r.mu.Unlock()
 	go func() {
 		_ = t.Wait()
@@ -3546,26 +3559,18 @@ func (r *subscriptionRun) abort() {
 }
 
 func (r *subscriptionRun) abortContext(ctx context.Context) {
-	r.mu.Lock()
-	t := r.tree
-	cmd, interactive, done := r.cmd, r.interactive, r.interactiveDone
-	r.mu.Unlock()
-	if t != nil {
-		if interactive && cmd != nil && cmd.Process != nil && done != nil {
-			// The wrapper owns a detached PTY session. Give its SIGINT
-			// handler a full chance to tear down tmux before the hard kill,
-			// or the tmux session and Claude are left behind.
-			if cmd.Process.Signal(os.Interrupt) == nil {
-				select {
-				case <-done:
-					r.finish()
-					return
-				case <-time.After(interactiveAbortGrace):
-				case <-ctx.Done():
-				}
+	if termination := r.termination.Load(); termination != nil {
+		// Give the PTY wrapper time to tear down its detached tmux session.
+		if termination.interrupt != nil && termination.interrupt.Signal(os.Interrupt) == nil {
+			select {
+			case <-termination.done:
+				r.finish()
+				return
+			case <-time.After(interactiveAbortGrace):
+			case <-ctx.Done():
 			}
 		}
-		t.Kill()
+		termination.tree.Kill()
 	}
 	r.finish()
 }
@@ -4203,6 +4208,9 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 		}
 	}
 	if err != nil {
+		if errors.Is(err, errRuntimeClosing) {
+			return writeRuntimeClosing(w, from)
+		}
 		if errors.Is(err, errInteractiveOuterLive) || errors.Is(err, errInteractiveTerminalBusy) || errors.Is(err, errInteractiveSessionStoreInvalid) {
 			return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 		}
