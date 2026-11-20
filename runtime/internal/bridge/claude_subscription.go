@@ -3715,6 +3715,12 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		return writeError(w, from, status, err.Error()), err.Error()
 	}
+	if err := rt.bridge.claimExplicitReadOnlyRecovery(owner, outerSession, &prepared); err != nil {
+		return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
+	}
+	if prepared.explicitReadOnly {
+		defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
+	}
 	return rt.servePreparedMessagesInner(w, r, from, name, model, owner, outerSession, prepared, usage, start)
 }
 
@@ -3723,11 +3729,7 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error)) (int, string) {
 	req := prepared.request
 	optInCurrent := prepared.readOnlyOptIn
-	explicitReadOnly := optInCurrent >= 0
-	if explicitReadOnly && outerSession == "" {
-		msg := "Claude interactive read-only recovery requires a conversation ID"
-		return writeError(w, from, http.StatusConflict, msg), msg
-	}
+	explicitReadOnly := prepared.explicitReadOnly
 	// A malformed, unreadable or replaced checkpoint file cannot be treated
 	// as an empty history. Reject before fallback/migration matching or
 	// starting any new native process against this outer conversation.
@@ -3755,7 +3757,7 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 	// still alive and owns this conversation. Serialize against new turns
 	// before reaping it. Never displace a live client tool callback: it may
 	// still have side effects in the caller's environment.
-	recoveryClaimed := false
+	recoveryClaimed := explicitReadOnly
 	var legacyPrompt string
 	legacyApproved := false
 	if run == nil && os.Getenv("MAGPIE_CLAUDE_LEGACY_OPERATOR_APPROVED") == "1" && interactiveToolContinuation(req) {
@@ -3911,14 +3913,8 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 			log.Print("Claude interactive accepted one-shot durable orphan result: beginning tool-free recovery")
 		}
 	}
-	if explicitReadOnly && !recoveryClaimed {
-		if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
-			msg := "Claude interactive recovery already in flight"
-			return writeError(w, from, http.StatusConflict, msg), msg
-		}
-		recoveryClaimed = true
-		defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
-		if err := rt.bridge.prepareExplicitReadOnlyRecovery(owner, outerSession, req); err != nil {
+	if explicitReadOnly {
+		if err := rt.bridge.releaseAbandonedRecoveryOwner(owner, outerSession, model); err != nil {
 			return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 		}
 	}
@@ -4357,10 +4353,6 @@ func relay(w http.ResponseWriter, r *http.Request, from string, name string, req
 	}
 	ended(said, stop, r.Context().Err() == nil)
 	res := col.finish()
-	if stop == "length" || stop == "filter" {
-		// A cut-off turn delivers its stop reason and complete text blocks.
-		res.Parts = slices.DeleteFunc(res.Parts, func(p Part) bool { return p.Kind == ToolCall })
-	}
 	usage.add(res.Usage)
 	usage.add(Usage{Served: res.Model})
 	w.Header().Set("Content-Type", "application/json")

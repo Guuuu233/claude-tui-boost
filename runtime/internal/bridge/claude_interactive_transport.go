@@ -1962,11 +1962,13 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 			}
 			hasPendingTool := pendingToolMessage != ""
 			pendingToolMessage = ""
-			if r.schema {
-				switch {
-				case msg.IsError:
-					why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorKind)
-					if why == "" {
+			hasStructuredOutput := len(msg.StructuredOutput) > 0 && string(msg.StructuredOutput) != "null"
+			switch {
+			case msg.IsError:
+				why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorKind)
+				if why == "" {
+					why = "Claude interactive wrapper ended without a complete text answer"
+					if r.schema {
 						why = "Claude Code gave no answer fitting the schema"
 						if msg.Subtype != "" {
 							why += " (" + msg.Subtype + ")"
@@ -1975,24 +1977,28 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 							why += ": " + strings.Join(msg.Errors, "; ")
 						}
 					}
-					r.emit(Event{Kind: KError, Text: why, Status: msg.APIErrorStatus})
-				case !started || len(msg.StructuredOutput) == 0 || string(msg.StructuredOutput) == "null":
-					r.emit(Event{Kind: KError, Text: "Claude Code ended the turn with no answer fitting the schema"})
-				default:
-					r.emit(Event{Kind: KText, Text: string(msg.StructuredOutput)})
-					if !truncated {
-						stop = "stop"
-					}
-					r.emit(Event{Kind: KStop, Stop: stop})
 				}
-			} else if msg.IsError || !started || (!sawText && !hasPendingTool) || (stop != "stop" && !truncated) {
+				r.emit(Event{Kind: KError, Text: why, Status: msg.APIErrorStatus})
+			case truncated && hasPendingTool:
+				r.emit(Event{Kind: KError, Text: "Claude Code's reply was truncated during a tool request"})
+			case truncated && started:
+				if r.schema && hasStructuredOutput {
+					r.emit(Event{Kind: KText, Text: string(msg.StructuredOutput)})
+				}
+				r.emit(Event{Kind: KStop, Stop: stop})
+			case r.schema && started && hasStructuredOutput:
+				r.emit(Event{Kind: KText, Text: string(msg.StructuredOutput)})
+				r.emit(Event{Kind: KStop, Stop: "stop"})
+			case r.schema:
+				r.emit(Event{Kind: KError, Text: "Claude Code ended the turn with no answer fitting the schema"})
+			case started && sawText && stop == "stop":
+				r.emit(Event{Kind: KStop, Stop: stop})
+			default:
 				why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorKind)
 				if why == "" {
 					why = "Claude interactive wrapper ended without a complete text answer"
 				}
 				r.emit(Event{Kind: KError, Text: why, Status: msg.APIErrorStatus})
-			} else {
-				r.emit(Event{Kind: KStop, Stop: stop})
 			}
 			toolStopped = false
 			r.endSegment()

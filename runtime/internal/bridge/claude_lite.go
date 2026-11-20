@@ -55,6 +55,9 @@ const statelessSession = "stateless"
 
 func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, outerSession string, prepared preparedInteractiveRequest, usage *Usage) (int, string) {
 	owner := "claude-tui\x00default"
+	if err := rt.bridge.claimExplicitReadOnlyRecovery(owner, outerSession, &prepared); err != nil {
+		return writeError(w, protoAnthropic, http.StatusConflict, err.Error()), err.Error()
+	}
 	req := prepared.request
 	serveInner := func() (int, string) {
 		start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
@@ -62,7 +65,8 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		}
 		return rt.servePreparedMessagesInner(w, r, protoAnthropic, "Claude Code", model, owner, outerSession, prepared, usage, start)
 	}
-	if prepared.readOnlyOptIn >= 0 {
+	if prepared.explicitReadOnly {
+		defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
 		return serveInner()
 	}
 	// Rebuilding is not permission to erase a mismatched tool result. When

@@ -8,8 +8,9 @@ import (
 )
 
 type preparedInteractiveRequest struct {
-	request       *Request
-	readOnlyOptIn int
+	request          *Request
+	readOnlyOptIn    int
+	explicitReadOnly bool
 }
 
 func prepareInteractiveRequest(body []byte, headers http.Header, model string) (preparedInteractiveRequest, int, error) {
@@ -37,31 +38,39 @@ func prepareInteractiveRequest(body []byte, headers http.Header, model string) (
 		}
 	}
 	optIn := interactiveReadOnlyOptInIndex(req)
-	if optIn >= 0 {
-		req = interactiveSanitizeReadOnly(req)
-	}
 	return preparedInteractiveRequest{request: req, readOnlyOptIn: optIn}, http.StatusOK, nil
 }
 
-// The caller holds the outer turn while checking the checkpoint and releasing a parked owner.
-func (b *subscriptionBridge) prepareExplicitReadOnlyRecovery(owner, outerSession string, req *Request) error {
-	saved, ok, err := b.loadInteractiveSession(owner, outerSession)
-	if err != nil {
+// The caller releases the outer turn for a qualified recovery request.
+func (b *subscriptionBridge) claimExplicitReadOnlyRecovery(owner, outerSession string, prepared *preparedInteractiveRequest) error {
+	if outerSession == "" || prepared.readOnlyOptIn < 0 {
+		return nil
+	}
+	model := prepared.request.Model
+	eligible, err := b.explicitReadOnlyRecoveryEligible(owner, outerSession, model)
+	if err != nil || !eligible {
 		return err
 	}
-	model := req.Model
-	if !ok || !saved.Dirty || (saved.Model != "" && saved.Model != model) {
-		return errors.New("Claude interactive read-only recovery requires a matching dirty checkpoint")
+	if !b.claimInteractiveOuterTurn(owner, outerSession) {
+		return errors.New("Claude interactive recovery already in flight")
 	}
-	if saved.Model == "" && claudeTier(model) == "haiku" {
-		shape, _, err := interactiveRequestWithoutSystem(req)
-		if err != nil {
-			return err
-		}
-		if len(shape.Messages) == 1 {
-			return errors.New("Claude interactive read-only recovery requires a model-bound checkpoint for a single-turn Haiku request")
-		}
+	eligible, err = b.explicitReadOnlyRecoveryEligible(owner, outerSession, model)
+	if err != nil || !eligible {
+		b.releaseInteractiveOuterTurn(owner, outerSession)
+		return err
 	}
+	prepared.explicitReadOnly = true
+	prepared.request = interactiveSanitizeReadOnly(prepared.request)
+	return nil
+}
+
+func (b *subscriptionBridge) explicitReadOnlyRecoveryEligible(owner, outerSession, model string) (bool, error) {
+	saved, ok, err := b.loadInteractiveSession(owner, outerSession)
+	return ok && saved.Dirty && (saved.Model == "" || saved.Model == model), err
+}
+
+// The caller holds the outer turn while releasing an abandoned parked owner.
+func (b *subscriptionBridge) releaseAbandonedRecoveryOwner(owner, outerSession, model string) error {
 	old := b.interactiveOuterOwner(owner, outerSession)
 	if old == nil {
 		return nil
