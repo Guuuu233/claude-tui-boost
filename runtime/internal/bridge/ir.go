@@ -303,12 +303,9 @@ type Result struct {
 // collector assembles a Result from events. Encoders use the same logic to
 // know what the reply contained so far.
 type collector struct {
-	res  Result
-	args strings.Builder // arguments of the open tool call
-	err  string
-	// the error's status and kind, as its event gave them
-	errStatus int
-	errCode   string
+	res     Result
+	args    strings.Builder // arguments of the open tool call
+	failure *Event
 }
 
 func (c *collector) last(k Kind) *Part {
@@ -367,7 +364,7 @@ func (c *collector) add(ev Event) {
 		c.res.Usage.add(ev.Usage)
 		c.res.Usage.add(Usage{RequestID: ev.RequestID})
 	case KError:
-		c.err, c.errStatus, c.errCode = ev.Text, ev.Status, ev.Code
+		c.failure = &ev
 	case KSearch:
 		c.closeTool()
 		c.res.Parts = append(c.res.Parts, Part{Kind: Search, Text: ev.Text, Hits: ev.Hits})
@@ -391,18 +388,6 @@ func (c *collector) finish() Result {
 		}
 	}
 	return c.res
-}
-
-// saidAnything reports whether a reply has more than thinking: text, a
-// call, a search or an image. A turn that only thought and then failed is
-// the failure, not an answer with nothing in it.
-func saidAnything(parts []Part) bool {
-	for _, p := range parts {
-		if p.Kind != Thinking {
-			return true
-		}
-	}
-	return false
 }
 
 // argsOf is a tool call's arguments as a JSON object, never empty.

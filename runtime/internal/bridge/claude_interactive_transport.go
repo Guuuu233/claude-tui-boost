@@ -1735,7 +1735,8 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 		// A different message/result means all whole-message rows of the
 		// pending tool turn have arrived. Usually the quiet timer settles it
 		// first; this is the deterministic boundary when another row follows.
-		if pendingToolMessage != "" && (msg.Type != "assistant" || msg.Message.ID != pendingToolMessage) {
+		// A terminal result decides whether to hand off pending tools or end the turn.
+		if pendingToolMessage != "" && msg.Type != "result" && (msg.Type != "assistant" || msg.Message.ID != pendingToolMessage) {
 			// A callback-first tool may have no transcript row yet. Its first
 			// assistant row is part of the same tool turn, not a new reply.
 			if pendingToolMessage != callbackMessage || msg.Type != "assistant" {
@@ -1948,6 +1949,15 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 			}
 		case "result":
 			finished = true
+			stop := stopFromAnthropic(msg.StopReason)
+			truncated := stop == "length" || stop == "filter"
+			if !msg.IsError && pendingToolMessage != "" && (stop == "stop" || stop == "tool") {
+				settleToolTurn()
+				pmu.Unlock()
+				return
+			}
+			hasPendingTool := pendingToolMessage != ""
+			pendingToolMessage = ""
 			if r.schema {
 				switch {
 				case msg.IsError:
@@ -1966,16 +1976,19 @@ func (r *subscriptionRun) readInteractiveOneTurn(rd io.Reader) {
 					r.emit(Event{Kind: KError, Text: "Claude Code ended the turn with no answer fitting the schema"})
 				default:
 					r.emit(Event{Kind: KText, Text: string(msg.StructuredOutput)})
-					r.emit(Event{Kind: KStop, Stop: "stop"})
+					if !truncated {
+						stop = "stop"
+					}
+					r.emit(Event{Kind: KStop, Stop: stop})
 				}
-			} else if msg.IsError || !started || !sawText || stopFromAnthropic(msg.StopReason) != "stop" {
+			} else if msg.IsError || !started || (!sawText && !hasPendingTool) || (stop != "stop" && !truncated) {
 				why := nativeErrorResultText(msg.Result, msg.APIErrorStatus, msg.ErrorKind)
 				if why == "" {
 					why = "Claude interactive wrapper ended without a complete text answer"
 				}
 				r.emit(Event{Kind: KError, Text: why, Status: msg.APIErrorStatus})
 			} else {
-				r.emit(Event{Kind: KStop, Stop: "stop"})
+				r.emit(Event{Kind: KStop, Stop: stop})
 			}
 			toolStopped = false
 			r.endSegment()

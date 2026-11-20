@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,13 +53,18 @@ const liteResultsReceived = "Tool results received."
 // conversation of its own (the plugin found no stable conversation id).
 const statelessSession = "stateless"
 
-func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, outerSession string, body []byte, usage *Usage) (int, string) {
+func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, outerSession string, prepared preparedInteractiveRequest, usage *Usage) (int, string) {
 	owner := "claude-tui\x00default"
-	req, err := parseAnthropic(body)
-	if err != nil {
-		return writeError(w, protoAnthropic, http.StatusBadRequest, err.Error()), err.Error()
+	req := prepared.request
+	serveInner := func() (int, string) {
+		start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
+			return rt.bridge.startInteractiveRequest(ctx, req, model, "", owner, outerSession)
+		}
+		return rt.servePreparedMessagesInner(w, r, protoAnthropic, "Claude Code", model, owner, outerSession, prepared, usage, start)
 	}
-	req.Model = model
+	if prepared.readOnlyOptIn >= 0 {
+		return serveInner()
+	}
 	// Rebuilding is not permission to erase a mismatched tool result. When
 	// the caller's visible final assistant turn contains tool_use, every
 	// returned ID must match that turn, even if the old native run is gone.
@@ -88,21 +92,15 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		close(events)
 		return relay(w, r, protoAnthropic, "Claude Code", req, events, usage, func() {}, func(string, string, bool) {})
 	}
-	upstream := func() (int, string) {
-		start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
-			return rt.bridge.startInteractiveRequest(ctx, req, model, "", owner, outerSession)
-		}
-		return rt.serveMessagesInner(w, r, protoAnthropic, "Claude Code", model, owner, outerSession, body, usage, start)
-	}
 	// Desktop's own compaction and suggestion calls already run isolated.
 	if claudeDesktopCompaction(req) || claudeDesktopSuggestion(req) {
-		return upstream()
+		return serveInner()
 	}
 	// The exact continuation of a live run — its tool results, perhaps with
 	// what the user said meanwhile — goes on in that native session.
 	live, results, how := rt.bridge.match(req)
 	if live != nil && liteContinues(owner, model, req, live, results, how) {
-		return upstream()
+		return serveInner()
 	}
 	if live != nil && outerSession == "" {
 		// The run waits on the very results this request carries, but the
@@ -130,15 +128,6 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 			return writeError(w, protoAnthropic, http.StatusServiceUnavailable, msg), msg
 		}
 		defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
-	}
-	if len(req.Safeguards) > 0 {
-		req.SafeguardBeta = "dangerous-tool-use-2026-09-03"
-		for _, beta := range strings.Split(r.Header.Get("anthropic-beta"), ",") {
-			if beta = strings.TrimSpace(beta); strings.HasPrefix(beta, "dangerous-tool-use-") {
-				req.SafeguardBeta = beta
-				break
-			}
-		}
 	}
 	var search Tool
 	if req.WebSearch && !searching(r.Context()) && canSearch() {
