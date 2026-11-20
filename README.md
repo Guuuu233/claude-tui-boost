@@ -51,15 +51,15 @@ Magpie-compatible Agent / SDK client
        Interactive Claude Code
 ```
 
-## Fork install — 0.2.20-fork.2
+## Fork install — 0.2.20-fork.3
 
-This fork packages the managed-supervisor JavaScript update with Linux/macOS, amd64/arm64 Runtime and MCP Helper executables reused from `0.2.20-fork.1`. Existing history import and Linux zombie-supervisor handling remain available; this release requires zero Go rebuilds. Install from the fork through Magpie's GitHub plugin entry:
+This fork packages Linux/macOS, amd64/arm64 Runtime and MCP Helper executables rebuilt with Go 1.27.2 from this source. `0.2.20-fork.3` fixes request-guard routing, Runtime shutdown and owner lifetime, managed key transport and the Windows/WSL launch; history import and Linux zombie-supervisor handling remain available. Install from the fork through Magpie's GitHub plugin entry:
 
 ```sh
 magpie plugin add github:liangxyz/claude-tui-boost
 ```
 
-In Magpie's web UI, install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.2`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment to enable archive-style rebuilding. Verified continuations preserve native session identity and history matching; an oversized current input uses the same private paging path while keeping its resume ID. Imports within the 512 KiB UTF-8 paste budget retain the inline path. Larger imports use a short first user prompt and a run-private paginated MCP reader for the complete text, including an oversized current request. Inline images retain their existing private MCP reader. See [Recovery](RECOVERY.md) for lifecycle, reading costs and limits.
+In Magpie's web UI, install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.3`. Keep `MAGPIE_CLAUDE_HISTORY_IMPORT=1` in the Magpie service environment to enable archive-style rebuilding. Verified continuations preserve native session identity and history matching; an oversized current input uses the same private paging path while keeping its resume ID. Imports within the 512 KiB UTF-8 paste budget retain the inline path. Larger imports use a short first user prompt and a run-private paginated MCP reader for the complete text, including an oversized current request. Inline images retain their existing private MCP reader. See [Recovery](RECOVERY.md) for lifecycle, reading costs and limits.
 
 Overlapping plugin hosts using the same saved account and normalized configuration-directory path now share one authenticated managed Runtime. Each host holds its own connection; retiring one releases only that connection, and the last authenticated client triggers cleanup. Conversations retain their existing native-session boundaries. Use the same directory spelling across hosts; automatic owner restart, endpoint migration and cross-alias attachment remain separate work. See [release notes](RELEASE_NOTES.md) for the isolated Node/Bun evidence, 13 selected cases and real-platform limits.
 

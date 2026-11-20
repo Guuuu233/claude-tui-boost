@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.20-fork.3 — request guards, Runtime lifecycle and WSL launch fixes
+
+- Run credential interception, request validation, safeguards beta resolution and explicit read-only recovery detection in one shared step before the lite/inner split. Explicit read-only recovery qualifies with a matching dirty checkpoint; other marker requests keep the ordinary route and their tools.
+- Keep native stop reasons: output/context-limit cut-offs end with `max_tokens` and refusals with `refusal`; a cut-off during a tool request, a native error and a missing terminal result return errors on both JSON and SSE.
+- Bound Runtime shutdown: 503 with `Retry-After: 1` for new requests, parallel run interruption within 6 seconds, up to 4 seconds for `http.Server.Shutdown`, a 15-second supervisor grace, and a lock-free interrupt handle published at launch.
+- Tie the Runtime to its owner through `--exit-on-stdin-eof`, lock its state directory with `.runtime.lock`, remove its own `port` file on exit, give each SSE write a 5-second deadline, and return 410 to MCP callbacks that reach an ended run.
+- Pass the account signing key as the first stdin line (`--managed-key-stdin`) to the supervisor and shared owner; publish `.managed-live` atomically through a temporary file and `link()`; clear the plugin's Runtime caches on disconnect and pass the disconnect reason to the host.
+- Launch WSL with one Linux-native `PATH`, the distribution user's `HOME` for private state, and all seven boolean switches. `magpie-tui-doctor` recognises the fork, upstream and legacy install specs; the publish workflow reads its version from `package.json`.
+- Rebuild all eight Runtime/MCP Helper executables with Go 1.27.2 from this source.
+
 ## 0.2.20-fork.2 — shared managed Runtime across plugin hosts
 
 - Give each plugin host an authenticated attach client to one account-owned Runtime supervisor, using the same saved account and normalized configuration-directory path. Independent conversations retain their existing Runtime session boundaries.

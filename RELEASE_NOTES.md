@@ -1,3 +1,59 @@
+# v0.2.20-fork.3 — request guards, Runtime lifecycle and WSL launch fixes
+
+Install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.3`. This release changes the Go Runtime and the managed JavaScript, and ships all eight Linux/macOS, amd64/arm64 Runtime and MCP Helper executables rebuilt from this source with Go 1.27.2.
+
+## Changes
+
+### Request handling (Go Runtime)
+
+- One shared preparation step runs before requests split into the lite and inner paths: request parsing, outbound credential interception, request-shape validation, safeguards beta resolution and explicit read-only recovery detection. Ordinary first turns and history rebuilds now pass the same credential check as live continuations.
+- Explicit read-only recovery qualifies with a matching dirty checkpoint for the conversation and model, the same condition as earlier releases. A qualifying request claims the conversation, removes business tools and takes over the parked run on both paths. Other requests ending in the marker text follow the ordinary route with their tools; a checkpoint read error returns HTTP 409.
+- The safeguards beta is resolved before continuation matching, so a tool continuation that carries safeguards resumes its waiting native run.
+- Native terminal results keep their stop reason. A turn cut off by the output or context limit ends with `stop_reason: max_tokens`, and a refusal with `refusal`, including turns that produced only thinking. A cut-off during a tool request returns an error on both streaming and JSON responses.
+- A JSON response that ends in a native error, or without a terminal result, returns a protocol error even after partial output. A streaming reply whose event segment closes without a terminal result ends with an SSE `error` event, so a force-stopped turn is reported as failed.
+
+### Runtime lifecycle (Go Runtime and supervisor)
+
+- SIGTERM, SIGINT or stdin EOF starts one bounded shutdown: new `/v1/messages` requests get HTTP 503 with `Retry-After: 1`, all runs are interrupted in parallel within a shared 6-second budget, and `http.Server.Shutdown` gets up to 4 more seconds. The process exits after Shutdown returns. The supervisor allows 15 seconds before a force kill.
+- A request that arrives during shutdown gets the 503 before its checkpoint is marked dirty. Interrupting a native child uses a termination handle published at launch, so a slow tool-journal write holding the run lock leaves the interrupt on schedule.
+- The supervisor starts the Runtime with `--exit-on-stdin-eof` and holds its stdin pipe. When the owner exits for any reason, including SIGKILL, the Runtime shuts itself down, and the next attach starts exactly one Runtime for the account.
+- The Runtime holds an exclusive lock on `<state-dir>/.runtime.lock` for its lifetime. A second Runtime for the same state directory waits up to 15 seconds for the first to finish, then exits with code 1 and names the held directory.
+- On exit the Runtime removes the `port` file it wrote, before releasing the lock. A failed handshake write removes its own `.tmp` file.
+- Each SSE write has a 5-second deadline and event delivery has its own cancel signal, so a client that stops reading releases run cleanup. Long waits for tools or model output keep the stream open.
+- An MCP callback that reaches an ended run gets HTTP 410 at waiter registration. Private archive reads for ended runs keep their `unavailable` tool result.
+
+### Plugin and supervisor (JavaScript)
+
+- The account signing key travels as the first stdin line (`--managed-key-stdin`) from the plugin to its supervisor and from an attach client to the shared owner. Process arguments carry zero key material. The keyless standalone supervisor mode remains available.
+- `.managed-live` is published atomically: a complete private temporary file, then `link()`. An interrupted start leaves zero partial claims.
+- When an attach client exits, the plugin clears that account's Runtime and loader cache entries and passes the disconnect reason to the host. The next request attaches to a fresh Runtime. The same reason reaches the host when `fetch` fails or an SSE body read fails mid-reply.
+- Windows/WSL launch sets one Linux-native `PATH`, `HOME` and `TMPDIR` from the distribution login shell, and forwards all seven `MAGPIE_CLAUDE_*` boolean switches through the same allow-list as Linux and macOS. Runtime private state, key and staged executables live under the distribution user's `~/.cache/magpie-claude-tui`; the ready descriptor stays at its Windows-visible location.
+- `magpie-tui-doctor` recognises `github:liangxyz/claude-tui-boost`, upstream `github:Guuuu233/claude-tui-boost` and the legacy `magpie-claude-tui` spec.
+- The manual publish workflow reads the release version from `package.json`. In `src/index.mjs`, the hook proof key and the Runtime signing key are named `hookProofKey` and `runtimeKey`.
+
+## Updating
+
+- fork.3 takes effect after every host has released the account's connection and any running fork.2 owner has exited. A fork.3 plugin can attach to a fork.2 owner that is still serving, through the same `shared-v1` protocol, and that owner keeps its fork.2 behaviour until it exits. Update all hosts, then restart them at an idle boundary.
+- Windows/WSL state moves from `.cache/magpie-claude-tui` under the Windows home (seen as `/mnt/c/...` inside WSL) to `~/.cache/magpie-claude-tui` inside the distribution. With default WSL settings the fork.2 managed launch rarely reached a working Runtime, because the Windows `PATH` replaced the Linux one and DrvFS permissions made the Runtime reject the key file. The old directory can be deleted; a conversation with state there is rebuilt from history.
+
+## Known limits
+
+- If shutdown begins while a resumed turn's checkpoint is being marked dirty, the start is still refused and that conversation is rebuilt from history on the next start.
+- When the wrapper writes its final result while a tool request is still waiting to be handed over, the Runtime publishes the tool turn, as in fork.2.
+- The plugin forwards requests without `anthropic-beta`, and both sides use the default safeguards beta.
+- If Claude Code exhausts its retries and the wrapper's terminal result carries no error reason that the Runtime can forward, a failure such as `503 No available accounts` can surface as `Claude interactive wrapper ended without a complete text answer`. This occurred on fork.2; fork.3 retains the same terminal-result error handling. When the transcript contains a `<synthetic>` API-error assistant row, check its text and `apiErrorStatus` field, if present, for the original message and status.
+
+## Verification evidence
+
+- Go 1.27.2: before the two test-only fixes, the full `go test ./... -count=1` and the CI fault-injection selection (`-race -count=3 -timeout=210s`) passed; the full race suite exposed a test-only race in the cancellation test. After isolating that test's grace override in a subprocess, `TestTerminalCleanupLiteTurnCancelDuringAbort` passed 20 consecutive runs with `-race` (exit 0). `go vet -p 2 ./...` passed after integrating both test fixes. Full race and fault-injection results for the final candidate are pending.
+- Bun 1.4.2, the CI version, with the Magpie `v0.1.1268` `internal/plugin/host.js` as `MAGPIE_TUI_TEST_HOST`: the full `bun test` passed all 85 tests across 18 files.
+- The eight executables were built with CI's command (`CGO_ENABLED=0 -trimpath -buildvcs=false`, Go 1.27.2). The four MCP Helper builds reproduce the `0.2.20-fork.1` files, so the four Runtime files are the changed executables. `node scripts/verify-package-assets.mjs` exited 0 for all nine assets.
+- The new `magpie-tui-runtime.linux-amd64` was run directly: SIGTERM and closing its stdin each made it exit 0 and remove its `port` file; a second instance on the same state directory waited 15.05 s, exited 1 naming the held directory, and the first instance kept answering health checks.
+- A Linux lifecycle scenario with the real Go Runtime confirmed that supervisor and owner arguments carry zero key material, `.managed-live` is published complete, the host receives the Runtime's exit reason, the next request through the same loader attaches to the new Runtime and is sent once, and an owner SIGKILL makes the Runtime exit through stdin EOF and remove its `port` file.
+- Real WSL/DrvFS, native macOS and arm64 execution, and authenticated Claude inference remain target-environment checks; the WSL launch environment was exercised through the existing simulation cases and a local `/bin/sh` mapping scenario.
+
+## Previous fork version
+
 # v0.2.20-fork.2 — shared managed Runtime across plugin hosts
 
 Install or update `github:liangxyz/claude-tui-boost` and confirm package version `0.2.20-fork.2`. This managed-JavaScript lifecycle release reuses the eight Linux/macOS, amd64/arm64 Runtime and MCP Helper executables from `0.2.20-fork.1`; Go source and executable builds retain that version's evidence.

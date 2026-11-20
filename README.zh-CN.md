@@ -51,15 +51,15 @@
          原生 Claude Code TUI
 ```
 
-## Fork 安装：0.2.20-fork.2
+## Fork 安装：0.2.20-fork.3
 
-本 fork 随包提供 Linux/macOS、amd64/arm64 四种目标的 Runtime 与 MCP Helper。`0.2.20-fork.2` 更新托管 Runtime 的 JavaScript 生命周期，沿用 `0.2.20-fork.1` 的八个可执行产物；历史导入和 Linux 僵尸进程识别继续保留，本轮 Go 构建次数为零。
+本 fork 随包提供 Linux/macOS、amd64/arm64 四种目标的 Runtime 与 MCP Helper，均由本版源码以 Go 1.27.2 重新构建。`0.2.20-fork.3` 修正请求检查的分流、Runtime 关闭与 owner 生命周期、托管密钥的传递方式以及 Windows/WSL 启动；历史导入和 Linux 僵尸进程识别继续保留。
 
 ```sh
 magpie plugin add github:liangxyz/claude-tui-boost
 ```
 
-网页安装或更新入口填写 `github:liangxyz/claude-tui-boost`，完成后确认版本为 `0.2.20-fork.2`。在 Magpie 服务环境保留 `MAGPIE_CLAUDE_HISTORY_IMPORT=1` 可启用归档式历史重建；已验证的续接保留原生会话身份与历史匹配，当前输入超出预算时沿同一私有分页通道传入，原resume ID继续保留。512 KiB 以内的导入继续直接传入；超出时改用短首轮提示和当前回合专属的 MCP 分页读取，完整归档包含历史与当前任务，超大的当前输入也沿此路径保留。内联图片沿已有私有 MCP 通道读取。分页会增加工具调用和等待，模型上下文容量仍适用，具体行为见 [恢复说明](RECOVERY.md)。
+网页安装或更新入口填写 `github:liangxyz/claude-tui-boost`，完成后确认版本为 `0.2.20-fork.3`。在 Magpie 服务环境保留 `MAGPIE_CLAUDE_HISTORY_IMPORT=1` 可启用归档式历史重建；已验证的续接保留原生会话身份与历史匹配，当前输入超出预算时沿同一私有分页通道传入，原resume ID继续保留。512 KiB 以内的导入继续直接传入；超出时改用短首轮提示和当前回合专属的 MCP 分页读取，完整归档包含历史与当前任务，超大的当前输入也沿此路径保留。内联图片沿已有私有 MCP 通道读取。分页会增加工具调用和等待，模型上下文容量仍适用，具体行为见 [恢复说明](RECOVERY.md)。
 
 相同已保存账号、相同规范配置目录来源的多个插件宿主可共享一个经认证的托管 Runtime。每个宿主独立持有连接，旧宿主退出仅释放自身连接，最后一个认证客户端离开后再收尾；会话继续沿原生边界隔离。各宿主请使用相同目录拼写。owner 自动重启、端点迁移与跨别名附着留待独立需求。Node/Bun 隔离夹具、13 项既有定点用例及真实平台覆盖范围见 [发布说明](RELEASE_NOTES.md)。
 
