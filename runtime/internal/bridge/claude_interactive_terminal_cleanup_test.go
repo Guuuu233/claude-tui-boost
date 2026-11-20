@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -687,9 +688,19 @@ func TestTerminalCleanupLiteTurnCancelDuringAbort(t *testing.T) {
 	if runtimeGOOS() == "windows" {
 		t.Skip("requires a Unix shell and signal handler")
 	}
-	grace := interactiveAbortGrace
+	const childEnv = "MAGPIE_TEST_TERMINAL_CLEANUP_CANCEL_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTerminalCleanupLiteTurnCancelDuringAbort$", "-test.count=1")
+		child.Env = append(os.Environ(), childEnv+"=1")
+		if output, err := child.CombinedOutput(); err != nil {
+			t.Fatalf("isolated cancellation test: %v\n%s", err, output)
+		}
+		return
+	}
+	// The grace override is scoped to this process and lasts through abort cleanup.
 	interactiveAbortGrace = 3 * time.Second
-	t.Cleanup(func() { interactiveAbortGrace = grace })
 	dir := tcDir(t)
 	interrupted := filepath.Join(dir, "interrupted")
 	t.Setenv("MAGPIE_TC_INTERRUPTED", interrupted)
