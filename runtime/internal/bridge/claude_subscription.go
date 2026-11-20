@@ -3588,7 +3588,11 @@ func ownerAccount(owner string) (user string, own bool) {
 // and the model name comes from the request, validated against
 // Config.Models by the caller.
 func (rt *runtimeTUI) serveMessages(w http.ResponseWriter, r *http.Request, model, outerSession string, body []byte, usage *Usage) (int, string) {
-	return rt.serveLite(w, r, model, outerSession, body, usage)
+	prepared, status, err := prepareInteractiveRequest(body, r.Header, model)
+	if err != nil {
+		return writeError(w, protoAnthropic, status, err.Error()), err.Error()
+	}
+	return rt.serveLite(w, r, model, outerSession, prepared, usage)
 }
 
 // serveMessagesUpstream is the handler as upstream wrote it, before
@@ -3604,26 +3608,25 @@ func (rt *runtimeTUI) serveMessagesUpstream(w http.ResponseWriter, r *http.Reque
 	return rt.serveMessagesInner(w, r, protoAnthropic, "Claude Code", model, owner, outerSession, body, usage, start)
 }
 
-// serveMessagesInner is the extracted serveSubscription body: parse, match
-// a parked run, continue it with the caller's tool results or start a new
-// one, then relay the reply. Kept semantically identical to production's;
-// the account/provider/Via branches that chose a configDir are gone because
-// the plugin's runtime is bound to the host's native Claude login.
+// serveMessagesInner accepts wire requests through the common preparation stage.
 func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request, from, name, model, owner, outerSession string, body []byte, usage *Usage,
 	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error)) (int, string) {
-	req, err := parseAnthropic(body)
+	prepared, status, err := prepareInteractiveRequest(body, r.Header, model)
 	if err != nil {
-		return writeError(w, from, 400, err.Error()), err.Error()
+		return writeError(w, from, status, err.Error()), err.Error()
 	}
-	req.Model = model
-	if err := validateInteractiveOutboundCredentials(body, r.Header); err != nil {
-		return writeError(w, from, http.StatusBadRequest, err.Error()), err.Error()
-	}
-	if claudeDesktopCompaction(req) {
-		req = claudeDesktopCompactionRequest(req)
-	}
-	if err := validateInteractiveRequest(req); err != nil {
-		return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
+	return rt.servePreparedMessagesInner(w, r, from, name, model, owner, outerSession, prepared, usage, start)
+}
+
+// servePreparedMessagesInner continues a native callback or handles an isolated request or recovery.
+func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.Request, from, name, model, owner, outerSession string, prepared preparedInteractiveRequest, usage *Usage,
+	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error)) (int, string) {
+	req := prepared.request
+	optInCurrent := prepared.readOnlyOptIn
+	explicitReadOnly := optInCurrent >= 0
+	if explicitReadOnly && outerSession == "" {
+		msg := "Claude interactive read-only recovery requires a conversation ID"
+		return writeError(w, from, http.StatusConflict, msg), msg
 	}
 	// A malformed, unreadable or replaced checkpoint file cannot be treated
 	// as an empty history. Reject before fallback/migration matching or
@@ -3635,25 +3638,15 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			return writeError(w, from, http.StatusConflict, msg), msg
 		}
 	}
-	if len(req.Safeguards) > 0 {
-		req.SafeguardBeta = "dangerous-tool-use-2026-09-03"
-		for _, beta := range strings.Split(r.Header.Get("anthropic-beta"), ",") {
-			if beta = strings.TrimSpace(beta); strings.HasPrefix(beta, "dangerous-tool-use-") {
-				req.SafeguardBeta = beta
-				break
-			}
-		}
-	}
 	var search Tool
-	run, results, how := rt.bridge.match(req)
+	var run *subscriptionRun
+	var results []Part
+	var how string
+	var err error
+	if !explicitReadOnly {
+		run, results, how = rt.bridge.match(req)
+	}
 	recoveryCurrent := interactiveAbandonedToolRecoveryIndex(req)
-	optInCurrent := interactiveReadOnlyOptInIndex(req)
-	// Any dirty recovery turn is tool-free; the index is the wider of the
-	// new merged opt-in and the legacy pure-text recovery. Sanitize whenever
-	// either could fire so the request start() sees carries no tool surface.
-	// This must run before the synthetic search tool is computed: a
-	// web_search opt-in request otherwise re-installs the search handler on
-	// a run that was started tool-free.
 	recoveryIdx := optInCurrent
 	if recoveryIdx < 0 {
 		recoveryIdx = recoveryCurrent
@@ -3818,35 +3811,18 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 			log.Print("Claude interactive accepted one-shot durable orphan result: beginning tool-free recovery")
 		}
 	}
-	if run == nil && optInCurrent >= 0 && outerSession != "" && !recoveryClaimed {
-		saved, ok, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
-		if lookupErr != nil {
-			msg := errInteractiveSessionStoreInvalid.Error()
+	if explicitReadOnly && !recoveryClaimed {
+		if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
+			msg := "Claude interactive recovery already in flight"
 			return writeError(w, from, http.StatusConflict, msg), msg
 		}
-		if ok && saved.Dirty && (saved.Model == "" || saved.Model == model) {
-			if !rt.bridge.claimInteractiveOuterTurn(owner, outerSession) {
-				msg := "Claude interactive recovery already in flight"
-				return writeError(w, from, http.StatusConflict, msg), msg
-			}
-			recoveryClaimed = true
-			defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
-			if old := rt.bridge.interactiveOuterOwner(owner, outerSession); old != nil {
-				old.mu.Lock()
-				parked := old.interactive && old.abandonedByClient && !old.closed && !old.resuming && old.segment == nil &&
-					old.owner == owner && old.model == model && !old.parkedAt.IsZero() &&
-					len(old.pending) == 0 && len(old.early) == 0 && len(old.late) == 0
-				old.mu.Unlock()
-				if !parked {
-					msg := "Claude interactive recovery refused: original tool callbacks are still active"
-					return writeError(w, from, http.StatusConflict, msg), msg
-				}
-				log.Print("Claude interactive explicit read-only recovery replacing an abandoned parked PTY")
-				old.abort()
-			}
+		recoveryClaimed = true
+		defer rt.bridge.releaseInteractiveOuterTurn(owner, outerSession)
+		if err := rt.bridge.prepareExplicitReadOnlyRecovery(owner, outerSession, req); err != nil {
+			return writeError(w, from, http.StatusConflict, err.Error()), err.Error()
 		}
 	}
-	if recoveryIdx >= 0 && run == nil && outerSession != "" {
+	if !explicitReadOnly && recoveryIdx >= 0 && run == nil && outerSession != "" {
 		saved, savedOK, lookupErr := rt.bridge.loadInteractiveSession(owner, outerSession)
 		if lookupErr != nil {
 			msg := errInteractiveSessionStoreInvalid.Error()
@@ -4251,27 +4227,39 @@ func relay(w http.ResponseWriter, r *http.Request, from string, name string, req
 		}
 		col.add(ev)
 	}
-	if col.err != "" && !saidAnything(col.res.Parts) {
+	if failure := col.failure; failure != nil {
 		abort()
-		// a status, as in a stream, so another account can take over
-		code := 502
-		usage.add(Usage{ErrType: col.errCode})
-		if col.errStatus >= 400 {
-			code = col.errStatus
-		} else if quotaWords.MatchString(col.err) {
-			code = 429
+		msg := failure.Text
+		if msg == "" {
+			msg = "native turn failed"
 		}
-		code = liteStatus(code, col.err)
-		return writeError(w, from, code, name+": "+col.err), col.err
+		code := http.StatusBadGateway
+		usage.add(Usage{ErrType: failure.Code, RequestID: failure.RequestID})
+		if failure.Status >= 400 {
+			code = failure.Status
+		} else if quotaWords.MatchString(msg) {
+			code = http.StatusTooManyRequests
+		}
+		code = liteStatus(code, msg)
+		return writeError(w, from, code, name+": "+msg), msg
 	}
-	ended(said, stop, col.err == "" && r.Context().Err() == nil)
+	if stop == "" {
+		abort()
+		msg := "native turn ended without a terminal result"
+		return writeError(w, from, http.StatusBadGateway, name+": "+msg), msg
+	}
+	ended(said, stop, r.Context().Err() == nil)
 	res := col.finish()
+	if stop == "length" || stop == "filter" {
+		// A cut-off turn delivers its stop reason and complete text blocks.
+		res.Parts = slices.DeleteFunc(res.Parts, func(p Part) bool { return p.Kind == ToolCall })
+	}
 	usage.add(res.Usage)
 	usage.add(Usage{Served: res.Model})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 	_, _ = w.Write(renderUsage(from, res, req, usage))
-	return 200, col.err
+	return http.StatusOK, ""
 }
 
 // bridgeTools are the caller's tools as the MCP helper offers them, less
