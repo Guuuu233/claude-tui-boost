@@ -29,6 +29,35 @@ const SUPERVISOR = join(packageRoot, "scripts", "managed-runtime-supervisor.mjs"
 const hex = n => randomBytes(n).toString("hex");
 const sha = value => createHash("sha256").update(value).digest("hex");
 
+function waitForDisconnect(runtime, signal) {
+  return new Promise(resolveWait => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolveWait();
+    };
+    const timer = setTimeout(finish, 1000);
+    signal.addEventListener("abort", finish, { once: true });
+    runtime.disconnected.then(finish);
+  });
+}
+
+function withRuntimeStreamErrors(response, runtime, signal) {
+  if (!response.body) return response;
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const input = new WritableStream({
+    start(controller) {
+      // Propagate cancellation from the consumer to the Runtime response.
+      writer.closed.catch(error => controller.error(error));
+    },
+    write: chunk => writer.write(chunk),
+    close: () => writer.close(),
+    abort: error => writer.abort(signal.aborted ? error : runtime.disconnectError ?? error),
+  });
+  return new Response(response.body.pipeThrough({ readable, writable: input }), response);
+}
+
 // ---------- serialized account key (opaque to the host GUI) ----------
 // The stored api key carries everything the lazy hooks need to start the
 // account's own runtime: validated inputs + a managed secret used only for
@@ -505,12 +534,15 @@ export function createManagedHooks({
           const current = await runtimeForAccount(accountKey, spec);
           if (init.signal.aborted) throw init.signal.reason;
           if (current.disconnectError) throw current.disconnectError;
+          let response;
           try {
-            return await (transport ?? globalThis.fetch)(new URL("messages", current.url).href, init);
+            response = await (transport ?? globalThis.fetch)(new URL("messages", current.url).href, init);
           } catch (error) {
+            if (!current.disconnectError && !init.signal.aborted) await waitForDisconnect(current, init.signal);
             if (init.signal.aborted) throw error;
             throw current.disconnectError ?? new Error("Claude TUI Runtime connection failed", { cause: error });
           }
+          return withRuntimeStreamErrors(response, current, init.signal);
         };
         const hooks = createHooks({ runtimeURL: runtime.url, models: runtime.models }, send, managedProofKey);
         const authShim = async () => ({ type: "api", key: runtimeKey(spec) });
