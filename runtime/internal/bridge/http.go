@@ -17,12 +17,19 @@ import (
 	"time"
 )
 
+var errRuntimeClosing = errors.New("Runtime is shutting down")
+
+func writeRuntimeClosing(w http.ResponseWriter, proto string) (int, string) {
+	w.Header().Set("Retry-After", "1")
+	msg := errRuntimeClosing.Error()
+	return writeError(w, proto, http.StatusServiceUnavailable, msg), msg
+}
+
 // AdmissionHandler keeps MCP callbacks available while active runs drain.
 func (rt *runtimeTUI) AdmissionHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/messages" && rt.bridge.closing.Load() {
-			w.Header().Set("Retry-After", "1")
-			writeError(w, protoAnthropic, http.StatusServiceUnavailable, "Runtime is shutting down")
+			writeRuntimeClosing(w, protoAnthropic)
 			return
 		}
 		rt.ServeHTTP(w, r)
