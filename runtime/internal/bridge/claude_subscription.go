@@ -3166,13 +3166,6 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown or expired Claude run", http.StatusNotFound)
 		return
 	}
-	run.mu.Lock()
-	closed := run.closed
-	run.mu.Unlock()
-	if closed {
-		http.Error(w, "the agent's run ended", http.StatusGone)
-		return
-	}
 	body, status, err := readBoundedRequestBody(w, r, requestLimits{body: 16 << 20}, nil)
 	if err != nil {
 		http.Error(w, err.Error(), status)
@@ -3188,12 +3181,8 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run.mu.Lock()
-	closed, readOnly := run.closed, run.interactive && run.readOnlyRecovery
+	readOnly := run.interactive && run.readOnlyRecovery
 	run.mu.Unlock()
-	if closed {
-		http.Error(w, "the agent's run ended", http.StatusGone)
-		return
-	}
 	if readOnly {
 		// A tool-free recovery turn registered no tools and offers none:
 		// any callback — real, raced, or model-forged — is refused before
@@ -3359,7 +3348,7 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 	}
 	b.mu.Lock()
 	run.mu.Lock()
-	closed = run.closed
+	closed := run.closed
 	registered := !closed && run.pending[call.ToolCallID] == waiter
 	if registered {
 		b.calls[call.ToolCallID] = run
