@@ -57,7 +57,9 @@ The `0.2.20-fork.2` release validation used isolated Node/Bun process fixtures a
 
 For Docker deployments, enable an init process (`init: true` for the existing Compose service, or `--init` with the existing `docker run` configuration) so orphaned children are reaped. Apply this through container recreation while keeping the same `/config` bind mount and service environment. An ordinary restart keeps the current container's init setting. This addresses orphan process cleanup; the logs preceding a child exit are still needed to explain why it terminated.
 
-When retaining a locally compiled `bin/magpie-tui-runtime`, deploy the managed lifecycle fix by updating `src/managed-runtime.mjs` and `scripts/managed-runtime-supervisor.mjs` together from the same source branch at an idle boundary. A complete plugin package update can replace that local build. These JavaScript changes use the existing Runtime binary and preserve login and conversation data.
+For the switch from fork.2, finish active work, disconnect all hosts for the account and confirm that the old Runtime has exited as well as the old supervisor. An old Runtime can outlive a forcibly stopped supervisor and uses neither stdin-EOF shutdown nor the new directory lock. Keep the account directory, login and checkpoints intact. A packaged install selects the matching platform binary. For a source checkout with a locally compiled `bin/magpie-tui-runtime`, rebuild it alongside the supervisor so it supports `--exit-on-stdin-eof`.
+
+New shared claims carry the Runtime lifecycle capability alongside the existing `shared-v1` attachment marker. A live legacy owner remains attachable. A stale legacy shared claim with an ambiguous boot boundary requires operator action: stop all hosts for the account, confirm that the old owner and Runtime have both exited, and have the administrator retire only that account's stale `.managed-live` claim. Leave the account directory and conversation files in place. Update all hosts before any subsequent restart; older hosts still apply their earlier takeover rules.
 
 ## Checkpoint integrity and empty retries (since v0.2.8)
 

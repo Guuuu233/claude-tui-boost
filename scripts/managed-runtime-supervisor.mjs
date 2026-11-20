@@ -32,7 +32,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createConnection, createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, uptime } from "node:os";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 const sha256 = v => createHash("sha256").update(v).digest("hex");
@@ -54,20 +54,34 @@ function isProcessDead(pid) {
   } catch { return false; }
 }
 
-// A .managed-live claim left behind by an unclean reboot or SIGKILLed
-// supervisor is safe to reclaim only when we can prove the claiming supervisor
-// is gone (a different Linux boot_id, an ESRCH PID, or a Linux Z/X exit state).
-// Running processes, EPERM and unknown process states keep their claim.
-function isStaleSupervisorClaim(raw, bootId = readLinuxBootId()) {
-  const parts = String(raw ?? "").trim().split(/\s+/);
-  const pid = Number(parts[0]);
-  const ts = Number(parts[1]);
-  const claimBoot = parts[2] || "";
-  if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isFinite(ts) || ts <= 0) return false;
-  if (bootId && claimBoot && claimBoot !== bootId) return true;
-  const bootTimeMs = Date.now() - uptime() * 1000;
-  if (ts < bootTimeMs - 5000 && isProcessDead(pid)) return true;
-  return isProcessDead(pid);
+const SHARED_CLAIM = "shared-v1";
+const RUNTIME_LIFETIME = "runtime-eof-lock-v1";
+const LINUX_BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Across Linux boots both processes are gone. Within one boot, a shared
+// owner exit permits takeover only with the Runtime EOF and state-lock contract.
+function classifySupervisorClaim(raw, bootId) {
+  const [pidText, timeText, ...fields] = raw.trim().split(/\s+/);
+  const shared = fields.at(-1) === SHARED_CLAIM;
+  if (shared) fields.pop();
+  const marked = shared && fields.at(-1) === RUNTIME_LIFETIME;
+  if (marked) fields.pop();
+  const claimBoot = fields.length === 1 && LINUX_BOOT_ID.test(fields[0]) ? fields[0].toLowerCase() : "";
+  const capable = marked && (fields.length === 0 || Boolean(claimBoot));
+  const pid = Number(pidText);
+  const timestamp = Number(timeText);
+  let status = "held";
+  if (Number.isSafeInteger(pid) && pid > 0 && Number.isFinite(timestamp) && timestamp > 0) {
+    if (claimBoot && LINUX_BOOT_ID.test(bootId) && claimBoot !== bootId.toLowerCase()) status = "reclaim";
+    else if (isProcessDead(pid)) status = shared && !capable ? "unconfirmed" : "reclaim";
+  } else if (shared) {
+    status = "unconfirmed";
+  }
+  return { shared, capable, status };
+}
+
+function unconfirmedSharedClaim(file) {
+  return new Error(`Existing shared Runtime claim at ${file} requires administrator action. Confirm the previous owner and Runtime have both exited and follow the claim recovery instructions. The claim and account state remain in place.`);
 }
 
 function readManagedKey(input) {
@@ -143,6 +157,7 @@ const opt = name => {
   return i >= 0 ? argv[i + 1] : null;
 };
 const runtime = opt("--runtime");
+const runtimeStartupError = message => `${message}. Selected Runtime: ${runtime}. Use the complete plugin package or rebuild a local Runtime from this plugin version.`;
 const stateDir = opt("--state-dir");
 const readyFile = opt("--ready-file");
 const runtimeArgs = argv.flatMap((v, i) => (v === "--runtime-arg" ? [argv[i + 1]] : []));
@@ -355,7 +370,7 @@ function readSharedOwner(claim) {
 function refuseLiveClaim(prior) {
   // A concurrent shared owner won the existing claim. Its waiting clients
   // attach to that winner; this process has started no Runtime of its own.
-  if (sharedOwnerMode && prior.trim().split(/\s+/).at(-1) === "shared-v1") process.exit(0);
+  if (sharedOwnerMode && prior.trim().split(/\s+/).at(-1) === SHARED_CLAIM) process.exit(0);
   die(`state-dir ${stateDir} already has a live supervisor claim (${prior || "unreadable"}); refusing to double-start`);
 }
 
@@ -379,6 +394,8 @@ async function runAttachClient() {
     } catch {}
   });
   const deadline = Date.now() + ATTACH_WAIT_MS;
+  const bootId = readLinuxBootId();
+  let awaitingLegacyOwner = false;
   let launched = false;
   let launchFailed = false;
   let ownerExit = null;
@@ -390,7 +407,10 @@ async function runAttachClient() {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    if (!claim || isStaleSupervisorClaim(claim)) {
+    const { shared, capable, status } = classifySupervisorClaim(claim, bootId);
+    if (status === "unconfirmed") throw unconfirmedSharedClaim(liveFile);
+    awaitingLegacyOwner = shared && !capable && status === "held";
+    if (!claim || status === "reclaim") {
       if (!launched) {
         launched = true;
         const owner = spawn(process.execPath, [fileURLToPath(import.meta.url), "--shared-owner", ...argv.slice(1)], {
@@ -402,10 +422,10 @@ async function runAttachClient() {
         owner.stdin.end(`${managedKey}\n`);
         owner.unref();
       } else if (launchFailed || (ownerExit !== null && ownerExit !== 0)) {
-        throw new Error(`canonical Runtime owner could not establish its private attachment endpoint (code ${ownerExit ?? "spawn"})`);
+        throw new Error(runtimeStartupError(`canonical Runtime owner could not establish its private attachment endpoint (code ${ownerExit ?? "spawn"})`));
       }
     } else {
-      if (claim.split(/\s+/).at(-1) !== "shared-v1") {
+      if (!shared) {
         throw new Error("account state already has a live supervisor claim without shared attachment support; keep its active work and update at an idle boundary");
       }
       const found = readSharedOwner(claim);
@@ -426,6 +446,7 @@ async function runAttachClient() {
     }
     await new Promise(resolveWait => setTimeout(resolveWait, 60));
   }
+  if (awaitingLegacyOwner) throw unconfirmedSharedClaim(liveFile);
   throw new Error("shared Runtime attachment did not become ready within 30 seconds");
 }
 
@@ -679,14 +700,16 @@ catch (error) { die(`owned state-dir permissions could not be secured: ${error.m
 // Startup coordination serializes stale claim reclamation. Publish the full
 // claim in one exclusive link operation so every observer sees a complete record.
 const bootId = readLinuxBootId();
-const claimId = `${process.pid} ${Date.now()}${bootId ? " " + bootId : ""}${sharedOwnerMode ? " shared-v1" : ""}`;
+const claimId = [process.pid, Date.now(), bootId, ...(sharedOwnerMode ? [RUNTIME_LIFETIME, SHARED_CLAIM] : [])].filter(Boolean).join(" ");
 const publishClaim = () => writePrivateAtomic(liveFile, claimId + "\n", linkSync);
 try { publishClaim(); }
 catch (error) {
   if (error?.code !== "EEXIST") die(`state-dir claim: ${error.message}`);
   let prior = "";
   try { prior = readFileSync(liveFile, "utf8").trim(); } catch {}
-  if (!prior || !isStaleSupervisorClaim(prior, bootId)) refuseLiveClaim(prior);
+  const { status } = classifySupervisorClaim(prior, bootId);
+  if (status === "unconfirmed") die(unconfirmedSharedClaim(liveFile).message);
+  if (status !== "reclaim") refuseLiveClaim(prior);
   try {
     assertNoSymlinkComponents(liveFile, "file");
     rmSync(liveFile, { force: true });
@@ -819,10 +842,11 @@ const poll = setInterval(() => {
     clearInterval(poll);
     stopping = true;
     const status = childExit.signal ?? `code ${childExit.code}`;
-    console.error(`managed-supervisor: runtime exited before ready (${status})`);
+    const message = runtimeStartupError(`Runtime exited before ready (${status})`);
+    console.error(`managed-supervisor: ${message}`);
     try { rmSync(readyFile, { force: true }); } catch {}
     sharedControl?.close();
-    const notification = sharedControl?.report(`Runtime exited before ready (${status})`) ?? Promise.resolve();
+    const notification = sharedControl?.report(message) ?? Promise.resolve();
     notification.then(() => { release(); process.exit(1); });
     return;
   }
@@ -872,7 +896,8 @@ const poll = setInterval(() => {
   } catch {}
   if (Date.now() > deadline) {
     clearInterval(poll);
-    console.error("managed-supervisor: runtime handshake timed out");
-    shutdown(1, "Runtime handshake timed out");
+    const message = runtimeStartupError("Runtime handshake timed out");
+    console.error(`managed-supervisor: ${message}`);
+    shutdown(1, message);
   }
 }, 60);

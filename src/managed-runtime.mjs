@@ -30,6 +30,7 @@ const hex = n => randomBytes(n).toString("hex");
 const sha = value => createHash("sha256").update(value).digest("hex");
 
 function waitForDisconnect(runtime, signal) {
+  if (runtime.disconnectError || signal.aborted) return;
   return new Promise(resolveWait => {
     const finish = () => {
       clearTimeout(timer);
@@ -53,7 +54,10 @@ function withRuntimeStreamErrors(response, runtime, signal) {
     },
     write: chunk => writer.write(chunk),
     close: () => writer.close(),
-    abort: error => writer.abort(signal.aborted ? error : runtime.disconnectError ?? error),
+    async abort(error) {
+      await waitForDisconnect(runtime, signal);
+      return writer.abort(signal.aborted ? error : runtime.disconnectError ?? error);
+    },
   });
   return new Response(response.body.pipeThrough({ readable, writable: input }), response);
 }
@@ -175,11 +179,18 @@ function runtimeEntry(os = process.platform, cpuArch = process.arch) {
   const plat = os === "win32" ? "linux" : { darwin: "darwin", linux: "linux" }[os];
   const arch = { arm64: "arm64", x64: "amd64" }[cpuArch] ?? cpuArch;
   const candidates = [
-    os === "win32" ? null : join(packageRoot, "bin", "magpie-tui-runtime"),
     plat ? join(packageRoot, "bin", `magpie-tui-runtime.${plat}-${arch}`) : null,
+    os === "win32" ? null : join(packageRoot, "bin", "magpie-tui-runtime"),
   ].filter(Boolean);
-  for (const c of candidates) {
-    try { if (statSync(c).isFile() && (os === "win32" || (statSync(c).mode & 0o111))) return c; } catch {}
+  for (const entry of candidates) {
+    let stat;
+    try { stat = statSync(entry); }
+    catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw new Error(`Cannot access selected Runtime ${entry}. Reinstall the complete plugin package or rebuild the Runtime from this plugin version.`, { cause: error });
+    }
+    if (stat.isFile() && (os === "win32" || (stat.mode & 0o111))) return entry;
+    throw new Error(`Selected Runtime ${entry} must be an executable file. Restore its executable permissions or reinstall the complete plugin package.`);
   }
   return null;
 }
@@ -538,7 +549,7 @@ export function createManagedHooks({
           try {
             response = await (transport ?? globalThis.fetch)(new URL("messages", current.url).href, init);
           } catch (error) {
-            if (!current.disconnectError && !init.signal.aborted) await waitForDisconnect(current, init.signal);
+            await waitForDisconnect(current, init.signal);
             if (init.signal.aborted) throw error;
             throw current.disconnectError ?? new Error("Claude TUI Runtime connection failed", { cause: error });
           }

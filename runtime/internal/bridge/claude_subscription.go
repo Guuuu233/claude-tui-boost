@@ -239,6 +239,7 @@ type subscriptionRun struct {
 	interactiveUserNonce       string                                // pending native post-tool user context
 	interactiveUserAcked       bool                                  // retained before temporary files are removed
 	outerSession               string                                // outer client conversation persisted across PTY turns
+	handoffScope               *toolHandoffScope                     // originating account and conversation, set before publication
 	threadKey                  string                                // first user words that own outerSession
 	// readOnlyRecovery marks the explicit opt-in recovery turn: it was
 	// started with no tools at all, so any tool signal — a transcript
@@ -730,6 +731,7 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
 
 	run := &subscriptionRun{bridge: b, token: token, model: model, cmd: cmd, tmp: tmp, schema: len(req.Schema) > 0, pending: map[string]chan mcpToolResult{}, stdin: stdin, owner: owner, effort: req.Effort, sessions: sessions}
+	run.handoffScope = req.handoffScope
 	run.safeguardBeta = req.SafeguardBeta
 	if user, _ := ownerAccount(owner); user != "" {
 		run.loginVersion = config.LoginVersion(user)
@@ -2884,7 +2886,7 @@ func (b *subscriptionBridge) match(req *Request) (*subscriptionRun, []Part, stri
 		b.mu.Lock()
 		for _, p := range fresh {
 			run := b.calls[p.CallID]
-			if run == nil {
+			if !req.handoffScope.matches(run) {
 				continue
 			}
 			if found != nil && found != run {
@@ -2902,7 +2904,7 @@ func (b *subscriptionBridge) match(req *Request) (*subscriptionRun, []Part, stri
 			h := sha256.New()
 			hashMessages(h, req.Messages, func(int) { before[hex.EncodeToString(h.Sum(nil))] = true })
 		}
-		run, named, w := b.remap(req.Model, calls, fresh, before)
+		run, named, w := b.remap(req, calls, fresh, before)
 		if run != nil {
 			return run, named, byRemap
 		}
@@ -2927,7 +2929,8 @@ func (b *subscriptionBridge) match(req *Request) (*subscriptionRun, []Part, stri
 // arguments. Only one may be: two conversations that are the same so far,
 // down to their calls, would have their results told to either, and a new
 // run is started instead. The results are returned named by the run's ids.
-func (b *subscriptionBridge) remap(model string, calls, fresh []Part, before map[string]bool) (*subscriptionRun, []Part, string) {
+func (b *subscriptionBridge) remap(req *Request, calls, fresh []Part, before map[string]bool) (*subscriptionRun, []Part, string) {
+	model := req.Model
 	if len(calls) == 0 {
 		return nil, nil, noRunWaiting
 	}
@@ -2953,6 +2956,9 @@ func (b *subscriptionBridge) remap(model string, calls, fresh []Part, before map
 	var found *subscriptionRun
 	var ids []string // the run's id for each of calls
 	for _, run := range runs {
+		if !req.handoffScope.matches(run) {
+			continue
+		}
 		run.mu.Lock()
 		shown, told := slices.Clone(run.shown), run.told
 		waiting := !run.closed && !run.parkedAt.IsZero() && (run.model == "" || model == "" || run.model == model)
@@ -2985,13 +2991,13 @@ func (b *subscriptionBridge) remap(model string, calls, fresh []Part, before map
 		return nil, nil, why
 	}
 	named := slices.Clone(fresh)
-	waits := false // the run's agent is waiting on one of them
-	b.mu.Lock()
+	waits := false // the selected run's agent is waiting on one of them
+	found.mu.Lock()
 	for n := range named {
 		named[n].CallID = ids[theirs[named[n].CallID]]
-		waits = waits || b.calls[named[n].CallID] == found
+		waits = waits || (!found.closed && found.pending[named[n].CallID] != nil)
 	}
-	b.mu.Unlock()
+	found.mu.Unlock()
 	if !waits {
 		// its agent hasn't made its first call yet, or was answered
 		// already (a request sent again)
@@ -3079,7 +3085,9 @@ func (r *subscriptionRun) continueWith(results []Part, tools []bridgeTool) (<-ch
 			log.Printf("Claude interactive MCP tool result delivered: id_sha=%x", sum[:6])
 		}
 		r.bridge.mu.Lock()
-		delete(r.bridge.calls, p.CallID)
+		if r.bridge.calls[p.CallID] == r {
+			delete(r.bridge.calls, p.CallID)
+		}
 		r.bridge.mu.Unlock()
 		waiter <- result
 		close(waiter)
@@ -3347,8 +3355,14 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		sum := sha256.Sum256([]byte(call.ToolCallID))
 		log.Printf("Claude interactive MCP callback registered: tool=%q id_sha=%x", call.Name, sum[:6])
 	}
+	// Wait for a busy run outside the bridge lock so shutdown can enumerate runs.
 	b.mu.Lock()
-	run.mu.Lock()
+	for !run.mu.TryLock() {
+		b.mu.Unlock()
+		run.mu.Lock()
+		run.mu.Unlock()
+		b.mu.Lock()
+	}
 	closed := run.closed
 	registered := !closed && run.pending[call.ToolCallID] == waiter
 	if registered {
@@ -3728,6 +3742,7 @@ func (rt *runtimeTUI) serveMessagesInner(w http.ResponseWriter, r *http.Request,
 func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.Request, from, name, model, owner, outerSession string, prepared preparedInteractiveRequest, usage *Usage,
 	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error)) (int, string) {
 	req := prepared.request
+	req.handoffScope = &toolHandoffScope{owner: owner, outerSession: outerSession}
 	optInCurrent := prepared.readOnlyOptIn
 	explicitReadOnly := prepared.explicitReadOnly
 	// A malformed, unreadable or replaced checkpoint file cannot be treated
@@ -3938,12 +3953,13 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 			req.SearchTool = search.Name
 		}
 	}
+	requestedTools := toolChoiceTools(req)
 	if interactiveToolContinuation(req) && !(run == nil && legacyMigrationWasClaimed(owner, outerSession) && cleanCheckpointNewUserSuffix(rt.bridge, owner, outerSession, model, req)) {
 		// A PTY tool result belongs exclusively to the existing live run.
 		// If its callback has expired, do not fall through to start() and
 		// replay the whole caller history into a fresh session or claude -p.
 		if run == nil || !run.interactive || run.owner != owner || run.model != model ||
-			(!run.offers(req.Tools) && !run.exactInteractiveToolGrowth(owner, req, how)) {
+			(!run.offers(requestedTools) && !run.exactInteractiveToolGrowth(owner, req, how)) {
 			if recoveryCurrent < 0 && recoveryIdx < 0 {
 				if rt.bridge.beginOrphanReadOnlyRecovery(owner, outerSession, model, req) {
 					req = interactiveSanitizeReadOnly(req)
@@ -3955,7 +3971,7 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 				} else {
 					log.Printf("Claude interactive orphan tool handoff rejected: recovery_candidate=%d match_reason=%q live_run=%t interactive=%t owner_match=%t model_match=%t tools_match=%t %s", recoveryCurrent, how,
 						run != nil, run != nil && run.interactive, run != nil && run.owner == owner,
-						run != nil && run.model == model, run != nil && run.offers(req.Tools), interactiveRecoveryDiagnostic(req))
+						run != nil && run.model == model, run != nil && run.offers(requestedTools), interactiveRecoveryDiagnostic(req))
 					msg := "Claude interactive migration: no matching live MCP run; refusing history replay"
 					return writeError(w, from, http.StatusConflict, msg), msg
 				}
@@ -4053,7 +4069,7 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 	// anew would be told the conversation in one message, its tool calls as
 	// text, and its model went on to write its own calls as text.
 	var more []bridgeTool
-	if run != nil && !run.offers(req.Tools) {
+	if run != nil && !run.offers(requestedTools) {
 		if run.interactive {
 			run.mu.Lock()
 			more = run.interactiveToolsLocked(req)
@@ -4143,7 +4159,7 @@ func (rt *runtimeTUI) servePreparedMessagesInner(w http.ResponseWriter, r *http.
 			contextKey := turnKey(owner, req, nil)
 			contextSnapshot := interactiveContextDiagnosticFromRequest(req)
 			run.mu.Lock()
-			for _, t := range req.Tools {
+			for _, t := range more {
 				run.tools[t.Name] = true
 			}
 			run.interactiveContextKey = contextKey
@@ -4361,14 +4377,29 @@ func relay(w http.ResponseWriter, r *http.Request, from string, name string, req
 	return http.StatusOK, ""
 }
 
-// bridgeTools are the caller's tools as the MCP helper offers them, less
-// those tool_choice rules out.
-func bridgeTools(req *Request) []bridgeTool {
-	tools := make([]bridgeTool, 0, len(req.Tools))
-	for _, t := range req.Tools {
-		if req.ToolChoice == "none" || (strings.HasPrefix(req.ToolChoice, "name:") && t.Name != strings.TrimPrefix(req.ToolChoice, "name:")) {
-			continue
+// toolChoiceTools selects the request tools eligible for MCP handoff.
+func toolChoiceTools(req *Request) []Tool {
+	if req.ToolChoice == "none" {
+		return nil
+	}
+	name, fixed := strings.CutPrefix(req.ToolChoice, "name:")
+	if !fixed {
+		return req.Tools
+	}
+	var selected []Tool
+	for _, tool := range req.Tools {
+		if tool.Name == name {
+			selected = append(selected, tool)
 		}
+	}
+	return selected
+}
+
+// bridgeTools adapts the selected tools for the MCP helper.
+func bridgeTools(req *Request) []bridgeTool {
+	selected := toolChoiceTools(req)
+	tools := make([]bridgeTool, 0, len(selected))
+	for _, t := range selected {
 		schema := t.Schema
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{"type":"object","properties":{}}`)

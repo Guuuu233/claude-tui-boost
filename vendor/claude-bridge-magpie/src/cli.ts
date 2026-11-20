@@ -55,11 +55,10 @@ import {
 } from "./hook-install.ts";
 import { makePrintErrorResult } from "./print-result.ts";
 import { runJsonSchemaStopHook, runRuntimeHook } from "./stop-hook.ts";
-import { NativeApiErrorTurn, type NativeApiFailure } from "./native-api-error.ts";
+import { apiErrorStatusFromRow, isNativeApiErrorRow, NativeApiErrorTurn, type NativeApiFailure } from "./native-api-error.ts";
 import { buildClaudeLaunchCommand, buildTmuxNewSessionArgs, interactiveMcpBackgroundEnvArgs, nativeAutoCompactionLaunchEnv } from "./launch-command.ts";
 import { writeNativeTmuxGuard } from "./native-tmux-guard.ts";
 import {
-  apiErrorStatusFromRow,
   makeClaudeErrorResultEvent,
   makeClaudeInitEvent,
   makeClaudeResultEvent,
@@ -250,7 +249,6 @@ let claudeInitEmitted = false;
 let claudeStreamEmittedCount = 0;
 let claudeVersionFromTranscript: string | undefined;
 let transcriptProjectFolder: string | undefined;
-let lastApiErrorStatus: number | null = null;
 
 let rlRef: import("node:readline").Interface | null = null;
 const stdoutLine = (obj: Record<string, unknown>): void => {
@@ -603,7 +601,7 @@ function extractStructuredOutput(
   return extractAndValidateStructuredOutput(text, jsonSchema.schema);
 }
 
-function failPrint(message: string, details: { rawResponse?: string } = {}): void {
+function failPrint(message: string, details: { rawResponse?: string; apiErrorStatus?: number | null } = {}): void {
   if (printDone) return;
   printDone = true;
   const failureCapture = captureFailurePane();
@@ -628,27 +626,23 @@ function failPrint(message: string, details: { rawResponse?: string } = {}): voi
     });
     process.stdout.write(JSON.stringify(result) + "\n");
   } else {
-    // json / stream-json compatibility: emit a headless-shaped error result
-    // (subtype error_during_execution), carrying bridge diagnostics as extras.
+    // Compatibility output carries the terminal error; pane capture stays local.
     if (outputFormat === "stream-json") ensureClaudeInit();
     process.stdout.write(
       JSON.stringify(
         makeClaudeErrorResultEvent({
-          message: messageWithPaneTail,
-          apiErrorStatus: lastApiErrorStatus,
+          message,
+          apiErrorStatus: details.apiErrorStatus,
           sessionId: transcriptSessionId,
           durationMs: lastTurnDurationMs,
           model: currentModel(),
           usage: lastAssistantUsage(),
           uuid: randomUUID(),
-          extras: {
-            run_state: runDir,
-            ...(details.rawResponse !== undefined ? { raw_response: details.rawResponse } : {}),
-            ...(failureCapture.paneTail ? { pane_tail: failureCapture.paneTail } : {}),
-          },
         })
-      ) + "\n"
+      ) + "\n",
+      () => shutdown(1)
     );
+    return;
   }
   shutdown(1);
 }
@@ -762,7 +756,10 @@ async function waitForPrintTurnEnd(): Promise<void> {
       await hydrateTranscriptFromStopEvent(stopEvent);
       if (failCompletedNativeApiTurn()) return;
       if (stopEvent.hook_event_name === "StopFailure") {
-        failPrint(runtimeStopFailureMessage(stopEvent), { rawResponse: JSON.stringify(stopEvent) });
+        failPrint(runtimeStopFailureMessage(stopEvent), {
+          rawResponse: JSON.stringify(stopEvent),
+          apiErrorStatus: apiErrorStatusFromRow(stopEvent),
+        });
         return;
       }
       if (pendingPrintFailure) {
@@ -806,8 +803,7 @@ async function waitForPrintTurnEnd(): Promise<void> {
 function failCompletedNativeApiTurn(): boolean {
   const failure = pendingNativeApiFailure;
   if (!failure) return false;
-  if (failure.status) lastApiErrorStatus = failure.status;
-  failPrint(`Claude Code API error: ${failure.message}`);
+  failPrint(`Claude Code API error: ${failure.message}`, { apiErrorStatus: failure.status });
   return true;
 }
 
@@ -921,7 +917,7 @@ function emitClaudeStreamCatchUp(rows: TranscriptRow[]): void {
     .map(row => transcriptRowToClaudeStreamEvent(row, transcriptSessionId))
     .filter((event): event is Record<string, unknown> => event !== null);
   if (events.length <= claudeStreamEmittedCount) return;
-  const firstAssistant = rows.find(row => row.type === "assistant");
+  const firstAssistant = rows.find(row => row.type === "assistant" && !isNativeApiErrorRow(row));
   ensureClaudeInit(firstAssistant ? modelFromAssistantRow(firstAssistant) : undefined);
   for (const event of events.slice(claudeStreamEmittedCount)) writeClaudeStreamEvent(event);
 }
@@ -1306,13 +1302,10 @@ function handleTranscriptRow(row: TranscriptRow, _rawLine: string): void {
   if (nativeFailure) pendingNativeApiFailure = nativeFailure;
 
   if (typeof row.version === "string" && row.version) claudeVersionFromTranscript = row.version;
-  if (row.type === "system" && row.subtype === "api_error") {
-    const status = apiErrorStatusFromRow(row);
-    if (status != null) lastApiErrorStatus = status;
-  }
 
   const type = String(row.type ?? "");
   if (type === "assistant") {
+    if (isNativeApiErrorRow(row)) return;
     const msg = (row.message as Record<string, unknown> | undefined) ?? {};
     const text = textFromContent(msg.content).trim();
     if (text) {

@@ -822,6 +822,9 @@ func (e *anthropicEncoder) event(ev Event) {
 	case KError:
 		e.close()
 		failed := map[string]any{"type": "api_error", "message": ev.Text}
+		if ev.Status >= 400 && ev.Status <= 599 {
+			failed["status"] = ev.Status
+		}
 		if ev.Code != "" {
 			failed["code"] = ev.Code // preserve the upstream error type, including refusals
 		}

@@ -24,22 +24,27 @@ func (r *subscriptionRun) exactInteractiveToolGrowth(owner string, req *Request,
 	if originalEffort != req.Effort {
 		return false
 	}
-	old, added, seen := make([]Tool, 0, len(req.Tools)), 0, make(map[string]bool, len(req.Tools))
+	added := make(map[string]bool)
+	for _, tool := range toolChoiceTools(req) {
+		if !known[tool.Name] {
+			added[tool.Name] = true
+		}
+	}
+	if len(added) == 0 {
+		return false
+	}
+	// Retain the rest of the request for the original context comparison.
+	seen := make(map[string]bool, len(req.Tools))
+	prior := *req
+	prior.Tools = make([]Tool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
 		if seen[tool.Name] {
 			return false
 		}
 		seen[tool.Name] = true
-		if known[tool.Name] {
-			old = append(old, tool)
-		} else {
-			added++
+		if !added[tool.Name] {
+			prior.Tools = append(prior.Tools, tool)
 		}
 	}
-	if added == 0 {
-		return false
-	}
-	prior := *req
-	prior.Tools = old
 	return turnKey(owner, &prior, nil) == originalKey || (r.owner == owner && r.interactiveEquivalentContext(&prior))
 }

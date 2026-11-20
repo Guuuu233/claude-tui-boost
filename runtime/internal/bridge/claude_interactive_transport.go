@@ -456,6 +456,9 @@ func (b *subscriptionBridge) matchInteractiveShown(req *Request, results []Part,
 	b.mu.Unlock()
 	var found *subscriptionRun
 	for _, run := range runs {
+		if !req.handoffScope.matches(run) {
+			continue
+		}
 		run.mu.Lock()
 		shown, told := slices.Clone(run.shown), run.told
 		waiting := run.interactive && !run.closed && !run.resuming && !run.parkedAt.IsZero() && run.model == req.Model
@@ -1525,6 +1528,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 			return &s
 		}(),
 		outerSession: outerSession, threadKey: firstWords(req), sessionID: resumeID, images: images,
+		handoffScope:   req.handoffScope,
 		historyArchive: req.historyArchive,
 		searchName:     req.SearchTool, schema: len(req.Schema) > 0, readOnlyRecovery: readOnly,
 		safeguards: bytes.Clone(req.Safeguards), safeguardBeta: req.SafeguardBeta, cacheMarked: cacheMarked}

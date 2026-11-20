@@ -7,6 +7,29 @@ import (
 	"strings"
 )
 
+// toolHandoffScope binds live callbacks to their originating request.
+// Auxiliary runs can keep this scope while using a transient native session.
+type toolHandoffScope struct {
+	owner        string
+	outerSession string
+}
+
+func (s *toolHandoffScope) matches(run *subscriptionRun) bool {
+	if run == nil {
+		return false
+	}
+	if s == nil {
+		return true
+	}
+	if s.owner != run.owner {
+		return false
+	}
+	if run.handoffScope != nil {
+		return *s == *run.handoffScope
+	}
+	return s.outerSession == run.outerSession
+}
+
 type preparedInteractiveRequest struct {
 	request          *Request
 	readOnlyOptIn    int

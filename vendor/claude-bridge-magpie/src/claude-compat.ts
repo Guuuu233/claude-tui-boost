@@ -15,6 +15,7 @@
  * interactive path, so synthesized init is thin and those timings are omitted.
  */
 import { buildModelUsage, computeCostUsd, type TokenUsage } from "./model-pricing.ts";
+import { apiErrorStatusFromRow, isNativeApiErrorRow } from "./native-api-error.ts";
 
 export type TranscriptRow = Record<string, unknown> & { type?: string; message?: unknown };
 export type ClaudeEvent = Record<string, unknown>;
@@ -85,6 +86,8 @@ export function reshapeAssistantEvent(row: TranscriptRow, sessionId?: string): C
   const session = firstString(row.sessionId, sessionId);
   const requestId = firstString(row.requestId);
   const uuid = firstString(row.uuid);
+  const isApiError = row.isApiErrorMessage === true;
+  const status = isApiError ? apiErrorStatusFromRow(row) : null;
   return {
     type: "assistant",
     message: row.message ?? {},
@@ -94,10 +97,10 @@ export function reshapeAssistantEvent(row: TranscriptRow, sessionId?: string): C
     ...(requestId ? { request_id: requestId } : {}),
     // Synthetic API failures are transport failures, not model answers.
     // Preserve native metadata so consumers need not infer it from text.
-    ...(row.isApiErrorMessage === true ? {
+    ...(isApiError ? {
       isApiErrorMessage: true,
       ...(row.error !== undefined ? { error: row.error } : {}),
-      ...(typeof row.api_error_status === "number" ? { api_error_status: row.api_error_status } : {}),
+      ...(status !== null ? { api_error_status: status } : {}),
     } : {}),
   };
 }
@@ -158,17 +161,11 @@ export function transcriptRowToClaudeStreamEvent(
   row: TranscriptRow,
   sessionId?: string
 ): ClaudeEvent | null {
-  if (row.type === "assistant") return reshapeAssistantEvent(row, sessionId);
+  // The turn tracker reports native API failures only after terminal evidence.
+  if (row.type === "assistant") return isNativeApiErrorRow(row) ? null : reshapeAssistantEvent(row, sessionId);
   if (row.type === "user") return reshapeUserEvent(row, sessionId);
   if (row.type === "system") return reshapeSystemEvent(row, sessionId);
   return null; // synthesized init + interactive-only rows handled elsewhere
-}
-
-/** Extract the HTTP status from an api_error transcript row, if present. */
-export function apiErrorStatusFromRow(row: TranscriptRow): number | null {
-  const error = (row as { error?: unknown }).error;
-  const status = error && typeof error === "object" ? (error as { status?: unknown }).status : undefined;
-  return typeof status === "number" ? status : null;
 }
 
 export function makeClaudeResultEvent(opts: {
@@ -214,9 +211,7 @@ export function makeClaudeResultEvent(opts: {
 
 /**
  * Terminal error result in headless `claude -p` shape (default subtype
- * `error_during_execution`). Bridge diagnostics — `error` message, plus any
- * `extras` like `run_state` / `pane_tail` — ride along as extra fields a
- * headless consumer ignores.
+ * `error_during_execution`). The error field contains the public summary.
  */
 export function makeClaudeErrorResultEvent(opts: {
   message: string;
@@ -227,7 +222,6 @@ export function makeClaudeErrorResultEvent(opts: {
   model?: string;
   usage?: TokenUsage;
   uuid?: string;
-  extras?: Record<string, unknown>;
 }): ClaudeEvent {
   return {
     type: "result",
@@ -251,6 +245,5 @@ export function makeClaudeErrorResultEvent(opts: {
     terminal_reason: "error",
     fast_mode_state: "off",
     uuid: opts.uuid ?? null,
-    ...(opts.extras ?? {}),
   };
 }

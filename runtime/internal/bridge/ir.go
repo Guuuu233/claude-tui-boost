@@ -90,6 +90,7 @@ type Tool struct {
 type Request struct {
 	compactHistory []Message
 	compactSystem  string
+	handoffScope   *toolHandoffScope // authenticated source of live tool continuations
 	// seedHistory is the conversation a native run resumes from, written as
 	// a Claude Code session before it starts (claude_lite.go).
 	seedHistory []Message

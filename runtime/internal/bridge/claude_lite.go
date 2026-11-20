@@ -59,6 +59,7 @@ func (rt *runtimeTUI) serveLite(w http.ResponseWriter, r *http.Request, model, o
 		return writeError(w, protoAnthropic, http.StatusConflict, err.Error()), err.Error()
 	}
 	req := prepared.request
+	req.handoffScope = &toolHandoffScope{owner: owner, outerSession: outerSession}
 	serveInner := func() (int, string) {
 		start := func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error) {
 			return rt.bridge.startInteractiveRequest(ctx, req, model, "", owner, outerSession)
@@ -279,7 +280,7 @@ func liteContinues(owner, model string, req *Request, run *subscriptionRun, resu
 	if !interactiveToolContinuation(req) || !run.interactive || run.owner != owner || run.model != model {
 		return false
 	}
-	if !run.offers(req.Tools) && !run.exactInteractiveToolGrowth(owner, req, how) {
+	if !run.offers(toolChoiceTools(req)) && !run.exactInteractiveToolGrowth(owner, req, how) {
 		return false
 	}
 	if validateInteractiveMatchedContinuation(req, run, results, how) != nil || !run.follows(req.Messages) {
@@ -516,7 +517,9 @@ func (b *subscriptionBridge) noteLiteParked(r *subscriptionRun) {
 		b.liteParked = make(map[string]*subscriptionRun)
 	}
 	for k, old := range b.liteParked {
-		old.mu.Lock()
+		if !old.mu.TryLock() {
+			continue // Revisit busy runs on the next expiry sweep.
+		}
 		stale := time.Since(old.parkedAt) > claudeCacheTTL
 		old.mu.Unlock()
 		if stale {

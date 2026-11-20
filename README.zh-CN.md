@@ -63,9 +63,9 @@ magpie plugin add github:liangxyz/claude-tui-boost
 
 相同已保存账号、相同规范配置目录来源的多个插件宿主可共享一个经认证的托管 Runtime。每个宿主独立持有连接，旧宿主退出仅释放自身连接，最后一个认证客户端离开后再收尾；会话继续沿原生边界隔离。各宿主请使用相同目录拼写。owner 自动重启、端点迁移与跨别名附着留待独立需求。Node/Bun 隔离夹具、13 项既有定点用例及真实平台覆盖范围见 [发布说明](RELEASE_NOTES.md)。
 
-首次从旧独占 supervisor 升级时，请待活跃任务结束，在空闲边界更新并完成旧宿主退出，再启动共享路径。原 claim、账号目录、Claude profile、登录资料及会话状态保留；两份托管 JavaScript 需配套更新，现有 Runtime 可继续使用。
+从 fork.2 升级到 fork.3 时，先结束活跃任务，断开该账号的所有宿主，确认旧 supervisor 和旧 Runtime 均已退出。保留账号目录和 Claude profile，配套更新插件与 Runtime。托管安装优先使用随包的平台专用 Runtime；源码目录若只有本机编译的 `bin/magpie-tui-runtime`，请使用与 supervisor 配套的版本。
 
-Docker 部署保持现有 `/config` 挂载；重建容器时可启用 Compose 的 `init: true` 或 Docker 的 `--init`，用于回收孤儿进程。历史本机构建的 `bin/magpie-tui-runtime` 具有优先级；正常托管入口使用随包的平台专用 Runtime。
+Docker 部署保持现有 `/config` 挂载；重建容器时可启用 Compose 的 `init: true` 或 Docker 的 `--init`，用于回收孤儿进程。
 
 `package-assets.json` 记录版本、Go 工具链、文件种类、平台/架构与字节数。打包检查覆盖清单完整性、普通可执行文件及平台文件头；Linux 启动行为另行实测。该 fork 采用零内容摘要操作的打包约定。macOS 与 arm64 产物为交叉构建，相应真实平台运行效果留待目标环境验证。
 

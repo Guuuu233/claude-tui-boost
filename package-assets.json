@@ -15,28 +15,28 @@
       "kind": "runtime",
       "platform": "darwin",
       "arch": "amd64",
-      "bytes": 12557616
+      "bytes": 12557760
     },
     {
       "path": "bin/magpie-tui-runtime.darwin-arm64",
       "kind": "runtime",
       "platform": "darwin",
       "arch": "arm64",
-      "bytes": 11727426
+      "bytes": 11727570
     },
     {
       "path": "bin/magpie-tui-runtime.linux-amd64",
       "kind": "runtime",
       "platform": "linux",
       "arch": "amd64",
-      "bytes": 12313735
+      "bytes": 12316090
     },
     {
       "path": "bin/magpie-tui-runtime.linux-arm64",
       "kind": "runtime",
       "platform": "linux",
       "arch": "arm64",
-      "bytes": 11407163
+      "bytes": 11409446
     },
     {
       "path": "bin/magpie-tui-mcp-helper.darwin-amd64",
