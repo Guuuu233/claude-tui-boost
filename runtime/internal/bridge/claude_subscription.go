@@ -4303,6 +4303,10 @@ func relay(w http.ResponseWriter, r *http.Request, from string, name string, req
 			see(ev)
 			return true
 		})
+		if failed == "" && stop == "" {
+			failed = "native turn ended without a terminal result"
+			enc.event(Event{Kind: KError, Text: failed})
+		}
 		// before the reply's last event, which the agent may answer at once
 		ended(said, stop, failed == "" && r.Context().Err() == nil)
 		// an error event already ended the reply in the client's protocol
