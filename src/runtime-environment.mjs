@@ -1,6 +1,6 @@
 // Only operator-selected boolean recovery and history options cross the managed boundary.
 // Never forward arbitrary environment names, credentials or legacy certificates.
-const recoveryFlags = [
+export const recoveryFlags = [
   'MAGPIE_CLAUDE_DURABLE_TOOL_JOURNAL',
   'MAGPIE_CLAUDE_AUTO_RECOVER_ORPHANS',
   'MAGPIE_CLAUDE_AUTO_RECOVER_RETRY',

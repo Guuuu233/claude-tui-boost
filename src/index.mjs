@@ -92,11 +92,11 @@ async function requireAuth(getAuth) {
 }
 
 // Reuses the existing bridge-auth-v1 protocol. No root ticket or new execution
-// authority is introduced by the plugin adapter. The optional proofKey is a
+// authority is introduced by the plugin adapter. The optional managedProofKey is a
 // managed-mode seam: the plugin's own chat.headers proof and the signed fetch
 // must share it when hooks live in different objects; explicit-options callers
 // never pass it and keep per-instance behaviour.
-export function createHooks(configuration, transport = globalThis.fetch, proofKey) {
+export function createHooks(configuration, transport = globalThis.fetch, managedProofKey) {
   const { url, models } = normalizeConfig(configuration);
   const portFile = configuration.runtimePortFile;
   if (portFile !== undefined &&
@@ -123,11 +123,11 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
     live.port = raw;
     return live;
   };
-  const key = proofKey ?? randomBytes(32);
+  const hookProofKey = managedProofKey ?? randomBytes(32);
   const usageProfileDir = configuration.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ??
     join(process.env.HOME || homedir(), ".claude");
   const usageReader = configuration.usageReader ?? readClaudeUsage;
-  const proof = digest => mac(key, "hook-proof/v1\0" + digest);
+  const proof = digest => mac(hookProofKey, "hook-proof/v1\0" + digest);
   return {
     async config(config) {
       config.provider ??= {};
@@ -161,7 +161,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
           baseURL: url.href,
           apiKey: "local-runtime-managed",
           async fetch(input, init) {
-            const key = await requireAuth(getAuth);
+            const runtimeKey = await requireAuth(getAuth);
             const request = new Request(input, init);
             const target = new URL(request.url);
             if (request.method !== "POST" || target.origin !== url.origin ||
@@ -182,7 +182,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
             const body = await boundedBody(request);
             if (request.signal.aborted) throw request.signal.reason;
             if (body === null) return requestTooLarge();
-            const session = digest === STATELESS ? "stateless" : mac(key, "magpie-bridge-account/v1\0" + digest);
+            const session = digest === STATELESS ? "stateless" : mac(runtimeKey, "magpie-bridge-account/v1\0" + digest);
             const timestamp = String(Math.floor(Date.now() / 1000));
             const nonce = randomBytes(16).toString("hex");
             const canonical = ["bridge-auth-v1", "POST", "/v1/messages",
@@ -195,7 +195,7 @@ export function createHooks(configuration, transport = globalThis.fetch, proofKe
               "x-bridge-timestamp": timestamp,
               "x-bridge-nonce": nonce,
               "x-bridge-session": session,
-              "x-bridge-mac": mac(key, canonical),
+              "x-bridge-mac": mac(runtimeKey, canonical),
             };
             const response = await transport(new URL("messages", currentRuntimeURL()).href, {
               method: "POST", headers, body, signal: request.signal, redirect: "manual",

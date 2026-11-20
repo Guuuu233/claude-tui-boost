@@ -5,6 +5,9 @@
 // the user's default WSL2 Linux distribution and bind 127.0.0.1:<port>, which
 // WSL2 forwards back to the Windows host.
 import { spawn } from "node:child_process";
+import { recoveryFlags } from "./runtime-environment.mjs";
+
+export const wslPathExport = 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"';
 
 export const isPrivateFileMode = (mode, os = process.platform) =>
   os === "win32" || (mode & 0o777) === 0o600;
@@ -39,11 +42,13 @@ export const wslEnvAssignments = (env = {}) => {
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
-    "MAGPIE_CLAUDE_NATIVE_TMUX_GUARD",
   ]) {
     if (env[k] !== undefined && env[k] !== "") {
       parts.push(`${k}=${wslShellQuote(env[k])}`);
     }
+  }
+  for (const flag of recoveryFlags) {
+    if (env[flag] === "0" || env[flag] === "1") parts.push(`${flag}=${env[flag]}`);
   }
   return parts;
 };
@@ -80,7 +85,7 @@ export function runWslCapture(args, { spawnImpl = spawn, timeoutMs = 10_000, env
 // Probes WSL2 availability, architecture, and required Linux binaries (`bun`, `tmux`, `claude`).
 export async function probeWslDeps({ spawnImpl = spawn, env = process.env } = {}) {
   const script = [
-    'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
+    wslPathExport,
     'printf "arch=%s\\n" "$(uname -m)"',
     'for cmd in bun node tmux claude; do printf "%s=%s\\n" "$cmd" "$(command -v "$cmd" 2>/dev/null || true)"; done',
   ].join("; ");
