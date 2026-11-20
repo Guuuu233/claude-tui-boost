@@ -85,6 +85,11 @@ func TestNativeTmuxGuardDetectsRealDetachedPaneAfterWrapperDeath(t *testing.T) {
 		t.Skipf("isolated tmux cannot launch here: %v (%s)", err, output)
 	}
 	defer exec.Command(wrapper, "kill-server").Run()
+	// Keep the isolated server alive when the target session is killed so
+	// the guard observes a missing session rather than server teardown.
+	if output, err := exec.Command(wrapper, "new-session", "-d", "-s", "keepalive", "-c", dir, "sleep 20").CombinedOutput(); err != nil {
+		t.Fatalf("isolated tmux keepalive setup failed: %v %s", err, output)
+	}
 	owner, outer := "owner", "orphan-synthetic"
 	writeTestNativeTmuxMarker(t, owner, outer, name)
 	// At this point the short-lived tmux *launcher* has already exited,
