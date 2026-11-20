@@ -59,9 +59,10 @@ setInterval(() => {}, 1000);
 `, { mode: 0o700 });
 
   // First run creates state-dir and .managed-owner, then we leave a stale .managed-live with a dead PID
-  const c1 = spawn(process.execPath, [supervisor, '--runtime', runtime, '--state-dir', state, '--ready-file', join(home, 'ready1.json'), '--managed-key', managedKey], {
+  const c1 = spawn(process.execPath, [supervisor, '--runtime', runtime, '--state-dir', state, '--ready-file', join(home, 'ready1.json'), '--managed-key-stdin'], {
     env: { PATH: process.env.PATH, HOME: home }, stdio: ['pipe', 'ignore', 'pipe'],
   });
+  c1.stdin.write(managedKey + '\n');
   try {
     const deadline = Date.now() + 5000;
     while (true) {
@@ -76,9 +77,10 @@ setInterval(() => {}, 1000);
   // Write a stale .managed-live pointing to a non-existent PID (999999) from an old timestamp
   await writeFile(join(state, '.managed-live'), '999999 1000000000000 old-boot-uuid\n', { mode: 0o600 });
 
-  const c2 = spawn(process.execPath, [supervisor, '--runtime', runtime, '--state-dir', state, '--ready-file', join(home, 'ready2.json'), '--managed-key', managedKey], {
+  const c2 = spawn(process.execPath, [supervisor, '--runtime', runtime, '--state-dir', state, '--ready-file', join(home, 'ready2.json'), '--managed-key-stdin'], {
     env: { PATH: process.env.PATH, HOME: home }, stdio: ['pipe', 'ignore', 'pipe'],
   });
+  c2.stdin.write(managedKey + '\n');
   let c2Err = ''; c2.stderr.on('data', d => { c2Err += d; });
   try {
     const deadline = Date.now() + 5000;
@@ -87,9 +89,10 @@ setInterval(() => {}, 1000);
       catch { if (Date.now() > deadline || c2.exitCode !== null) throw new Error('c2 failed to reclaim stale lock: ' + c2Err); await new Promise(r => setTimeout(r, 20)); }
     }
     // While c2 is still alive, a concurrent c3 must be refused
-    const c3 = spawn(process.execPath, [supervisor, '--runtime', runtime, '--state-dir', state, '--ready-file', join(home, 'ready3.json'), '--managed-key', managedKey], {
+    const c3 = spawn(process.execPath, [supervisor, '--runtime', runtime, '--state-dir', state, '--ready-file', join(home, 'ready3.json'), '--managed-key-stdin'], {
       env: { PATH: process.env.PATH, HOME: home }, stdio: ['pipe', 'ignore', 'pipe'],
     });
+    c3.stdin.write(managedKey + '\n');
     let c3Err = ''; c3.stderr.on('data', d => { c3Err += d; });
     const c3Code = await new Promise(r => c3.once('exit', r));
     assert.equal(c3Code, 2);
