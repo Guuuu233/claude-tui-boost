@@ -260,6 +260,7 @@ export function createManagedHooks({
     const args = [
       mapPath(SUPERVISOR),
       "--attach",
+      "--managed-key-stdin",
       "--runtime", mapPath(entry),
       "--state-dir", targetStateDir,
       "--ready-file", mapPath(readyFile),

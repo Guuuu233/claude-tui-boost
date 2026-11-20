@@ -4,8 +4,9 @@
 //
 //   node scripts/managed-runtime-supervisor.mjs \
 //     --runtime <entry> [--runtime-arg <arg>]... \
-//     --state-dir <dir> --ready-file <path>
-// The first stdin line carries the account's 64-character connection key.
+//     --state-dir <dir> --ready-file <path> [--managed-key-stdin]
+// With --managed-key-stdin, the first stdin line carries a 64-character key.
+// Standalone mode can also let the Runtime generate its own key.
 //
 // Contract:
 //   * Spawns `<runtime> --serve --port-file <state>/port --key-file <state>/key
@@ -13,10 +14,10 @@
 //     as an explicit argv — never a shell string — with a scrubbed
 //     environment (no ANTHROPIC_* or credential overrides; explicit proxy settings are preserved).
 //   * <state-dir> ownership is proven by a .managed-owner marker bound to the
-//     managed key. A previously owned dir resumes with its persistent key and
-//     checkpoints; a foreign or conflicting dir is refused.
-//   * Starts the Runtime with --reuse-key against its private 0600 key file.
-//     An existing mismatching key is refused as conflicting owned state.
+//     managed key or, in keyless standalone mode, to the Runtime and path.
+//     The marker protects checkpoints and establishes which directory can resume.
+//   * With a managed key, starts the Runtime with --reuse-key against its
+//     private 0600 key file. A conflicting key causes startup to fail.
 //   * Once the handshake files (key, models.json, port) exist, writes
 //     --ready-file and holds the child.
 //   * An attach client's stdin EOF or SIGTERM releases only its connection.
@@ -152,8 +153,12 @@ const die = message => {
 };
 
 let managedKey;
-try { managedKey = await readManagedKey(process.stdin); }
-catch (error) { die(error.message); }
+if (argv.includes("--managed-key-stdin")) {
+  try { managedKey = await readManagedKey(process.stdin); }
+  catch (error) { die(error.message); }
+} else if (attachMode || sharedOwnerMode) {
+  die("shared Runtime modes require --managed-key-stdin");
+}
 
 function checkNoSymlinkComponents(path, finalKind = "any") {
   const target = resolve(path);
@@ -640,7 +645,7 @@ let releaseStartup;
 try { releaseStartup = await acquireStartupTurn(); }
 catch (error) { die(error.message); }
 
-const ownerHash = sha256("managed-owner/v1\0" + managedKey);
+const ownerHash = sha256("managed-owner/v1\0" + (managedKey ?? (runtime + "\0" + resolve(stateDir))));
 const marker = join(stateDir, ".managed-owner");
 for (const file of [marker, liveFile, join(stateDir, "key"), join(stateDir, "port"), join(stateDir, "models.json")]) {
   assertNoSymlinkComponents(file, "file");
@@ -707,12 +712,14 @@ for (const file of [keyFile, portFile, modelsFile, readyFile]) assertNoSymlinkCo
 try {
   if (nativeAccountDir) mkdirSync(runtimeStateDir, { recursive: true, mode: 0o700 });
   try {
+    lstatSync(keyFile);
+    if (!managedKey) die(`key file ${keyFile} already exists; standalone mode requires a fresh key path`);
     const prior = readFileSync(keyFile, "utf8");
     if (prior.trim() !== managedKey) die(`key file ${keyFile} holds different bytes; refusing conflicting owned state`);
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  writePrivateAtomic(keyFile, managedKey);
+  if (managedKey) writePrivateAtomic(keyFile, managedKey);
 } catch (error) { die(`key file could not be written safely: ${error.message}`); }
 
 // Stale handshake descriptors from a dead previous run are ours to remove
@@ -743,7 +750,7 @@ const child = spawn(stageDrvFsExecutable(runtime), [
   "--key-file", keyFile,
   "--models-file", modelsFile,
   "--state-dir", runtimeStateDir,
-  "--reuse-key",
+  ...(managedKey ? ["--reuse-key"] : []),
   "--exit-on-stdin-eof",
   ...effectiveRuntimeArgs,
 ], {
