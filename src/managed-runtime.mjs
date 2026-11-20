@@ -21,7 +21,7 @@ import { createHooks, PROVIDER_ID, _internal } from "./index.mjs";
 import { readClaudeUsage } from "./claude-usage.mjs";
 import { runtimeEnvironment } from "./runtime-environment.mjs";
 import { beginFirstConnect, findExecutable, setupEnvironment } from "./first-connect.mjs";
-import { isPrivateFileMode, probeWslDeps, toWslPath, wslEnvAssignments, wslShellQuote } from "./wsl.mjs";
+import { isPrivateFileMode, probeWslDeps, toWslPath, wslEnvAssignments, wslPathExport, wslShellQuote } from "./wsl.mjs";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SUPERVISOR = join(packageRoot, "scripts", "managed-runtime-supervisor.mjs");
@@ -131,10 +131,9 @@ async function probeDeps(env = process.env, os = platform()) {
 }
 const missingDeps = d => ["wsl", "bun", "tmux", "claude"].filter(k => k in d && !d[k]);
 
-// The runtime's connection key is derived from the managed secret: the
-// supervisor passes --managed-key so <state>/key holds exactly this value
-// (persistent across restarts) and the plugin signs without ever surfacing
-// the key to the host GUI or logs.
+// The plugin sends the connection key through the supervisor's stdin. The
+// supervisor persists the key for the Runtime and the plugin signs requests
+// with its own copy.
 const runtimeKey = spec => createHmac("sha256", spec.managed).update("magpie-tui-runtime-key/v1").digest("hex");
 const depsHint = (missing, os = platform()) =>
   `missing dependencies${os === "win32" ? " in WSL2" : ""}: ${missing.join(", ")}. ` +
@@ -194,13 +193,12 @@ export function createManagedHooks({
   const dependencyProbe = deps ?? (() => probeDeps(env, os));
   const launch = spawnRuntime ?? ((argv, opts) => {
     if (os === "win32") {
-      const envAssigns = wslEnvAssignments({
-        ...opts?.env,
-        HOME: toWslPath(home),
-        CLAUDE_CONFIG_DIR: opts?.env?.CLAUDE_CONFIG_DIR ? toWslPath(opts.env.CLAUDE_CONFIG_DIR) : undefined,
-      }).join(" ");
+      const wslEnv = { ...opts?.env };
+      for (const name of ["HOME", "PATH", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR"]) delete wslEnv[name];
+      if (wslEnv.CLAUDE_CONFIG_DIR) wslEnv.CLAUDE_CONFIG_DIR = toWslPath(wslEnv.CLAUDE_CONFIG_DIR);
       const jsRunner = opts?.wslRunner || "bun";
-      const cmd = `export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH" ${envAssigns}; exec ${wslShellQuote(jsRunner)} ${argv.map(wslShellQuote).join(" ")}`;
+      const exports = [wslPathExport, ...wslEnvAssignments(wslEnv)].join(" ");
+      const cmd = `${exports}; exec ${wslShellQuote(jsRunner)} ${argv.map(wslShellQuote).join(" ")}`;
       return spawn("wsl.exe", ["--", "/bin/sh", "-lc", cmd], {
         env: opts?.env,
         stdio: opts?.stdio ?? ["pipe", "ignore", "inherit"],
@@ -257,17 +255,14 @@ export function createManagedHooks({
 
     const mapPath = p => (os === "win32" && p ? toWslPath(p) : p);
     const targetStateDir = mapPath(stateDir);
+    const key = runtimeKey(spec);
 
-    // Persisted owned key: the runtime mints/validates it under --reuse-key
-    // (0600 regular file, 64 hex). It never leaves the state dir.
     const args = [
       mapPath(SUPERVISOR),
       "--attach",
       "--runtime", mapPath(entry),
       "--state-dir", targetStateDir,
       "--ready-file", mapPath(readyFile),
-      "--managed-key", runtimeKey(spec),
-      "--runtime-arg", "--reuse-key",
     ];
     if (bridge) args.push("--runtime-arg", "--bridge", "--runtime-arg", mapPath(bridge));
     if (helper) args.push("--runtime-arg", "--helper", "--runtime-arg", mapPath(helper));
@@ -276,14 +271,31 @@ export function createManagedHooks({
 
     const child = launch(args, {
       env: safeChildEnv(spec.profile),
-      stdio: ["pipe", "ignore", "inherit"],
+      stdio: ["pipe", "ignore", "pipe"],
       wslRunner: wslInfo?.bun || wslInfo?.node || "bun",
     });
-    const exited = new Promise((res, rej) => {
-      child.once("error", rej);
-      child.once("exit", code => rej(new Error(`managed runtime supervisor exited during startup (code ${code})`)));
+    let supervisorOutput = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", chunk => {
+      supervisorOutput = (supervisorOutput + chunk).slice(-4096);
     });
+    let disconnectError;
+    const disconnected = new Promise(resolveDisconnect => {
+      const disconnect = reason => {
+        disconnectError ??= new Error(`Claude TUI Runtime disconnected (${reason})`);
+        resolveDisconnect(disconnectError);
+      };
+      child.once("error", error => disconnect(error.message));
+      child.once("close", (code, signal) => {
+        const diagnostic = /^managed-supervisor: ([^\r\n]+)$/m.exec(supervisorOutput)?.[1];
+        disconnect(diagnostic ?? signal ?? `supervisor exit code ${code}`);
+      });
+      child.stdin.on("error", () => disconnect("supervisor key pipe closed"));
+    });
+    const exited = disconnected.then(error => { throw error; });
+    exited.catch(() => {});
     try {
+      child.stdin.write(`${key}\n`);
       const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         try {
@@ -304,19 +316,19 @@ export function createManagedHooks({
               !stateMatches) {
             throw new Error("managed runtime readiness did not match the current owned supervisor");
           }
-          const keyPath = join(stateDir, "key");
           const modelsPath = join(stateDir, "models.json");
           assertNoSymlinkPath(stateDir, "directory");
-          assertNoSymlinkPath(keyPath, "file");
           assertNoSymlinkPath(modelsPath, "file");
-          const [keyHex, modelsRaw] = await Promise.all([
-            readFile(keyPath, "utf8"),
-            readFile(modelsPath, "utf8"),
-          ]);
-          if (keyHex.trim() !== runtimeKey(spec) || !isPrivateFileMode(statSync(keyPath).mode, os)) {
-            throw new Error("managed runtime key file did not match the account-owned private key");
+          // The WSL supervisor owns the native key file and validates its proof before publishing readiness.
+          if (!targetStateDir.startsWith("/mnt/")) {
+            const keyPath = join(stateDir, "key");
+            assertNoSymlinkPath(keyPath, "file");
+            const keyHex = await readFile(keyPath, "utf8");
+            if (keyHex.trim() !== key || !isPrivateFileMode(statSync(keyPath).mode, os)) {
+              throw new Error("managed runtime key file did not match the account-owned private key");
+            }
           }
-          const descriptor = JSON.parse(modelsRaw);
+          const descriptor = JSON.parse(await readFile(modelsPath, "utf8"));
           const reported = descriptor?.models;
           if (!reported || typeof reported !== "object" || Array.isArray(reported)) {
             throw new Error("managed runtime returned a malformed model capability map");
@@ -331,15 +343,16 @@ export function createManagedHooks({
           const missing = spec.models.filter(id => !Object.hasOwn(reported, id));
           if (missing.length) throw new Error(`managed runtime did not report configured model id(s): ${missing.join(", ")}`);
           const models = Object.fromEntries(spec.models.map(id => [id, { ...reported[id] }]));
+          if (disconnectError) throw disconnectError;
           return {
             url: `http://127.0.0.1:${ready.port}/v1/`,
             models,
-            // This child is an attach client. Stopping it releases this
-            // host's reference; other authenticated hosts keep the Runtime.
-            stop: () => { try { child.kill("SIGTERM"); } catch {} },
+            disconnected,
+            get disconnectError() { return disconnectError; },
           };
         } catch (error) {
-          if (error?.code !== "ENOENT" && !/Unexpected|JSON/.test(error?.message ?? "")) throw error;
+          if (disconnectError) throw disconnectError;
+          if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
           await new Promise(r => setTimeout(r, 60));
         }
       }
@@ -347,23 +360,28 @@ export function createManagedHooks({
     } catch (error) {
       await stopSupervisor(child);
       throw error;
-    } finally {
-      exited.catch(() => {});
     }
   }
 
-  async function owned(getAuth) {
-    const auth = await getAuth();
+  function runtimeForAccount(key, spec) {
+    let pending = accounts.get(key);
+    if (!pending) {
+      pending = startAccount(spec);
+      accounts.set(key, pending);
+      const clear = () => { if (accounts.get(key) === pending) accounts.delete(key); };
+      pending.then(runtime => runtime.disconnected.then(clear), clear);
+    }
+    return pending;
+  }
+
+  function requireAccount(auth) {
     const spec = auth?.type === "api" ? decodeKey(auth.key) : null;
     if (!spec) {
       throw Object.assign(
         new Error("Claude TUI managed runtime is not signed in — use the plugin's sign-in to select a profile and models"),
         { signIn: "expired" });
     }
-    if (!accounts.has(auth.key)) {
-      accounts.set(auth.key, startAccount(spec).catch(e => { accounts.delete(auth.key); throw e; }));
-    }
-    return { spec, runtime: await accounts.get(auth.key) };
+    return spec;
   }
 
   // Managed mode shares one hooks object across config/chat.headers/loader —
@@ -408,8 +426,7 @@ export function createManagedHooks({
                 spec.state = join(stateRoot, "accounts", sha(spec.managed).slice(0, 16), "state");
                 const key = encodeKey(spec);
                 // Verify the bundled runtime handshake before saving a successful account.
-                accounts.set(key, startAccount(spec).catch(error => { accounts.delete(key); throw error; }));
-                await accounts.get(key);
+                await runtimeForAccount(key, spec);
                 return { type: "success", key, metadata: { accountId: profile } };
               } catch (error) {
                 return { type: "failed", error: error.message };
@@ -475,23 +492,33 @@ export function createManagedHooks({
         return usageReader({ profileDir: profile, env: safeChildEnv(profile), os });
       },
       async loader(getAuth) {
-        const auth0 = await getAuth();
-        if (auth0?.key && loaderCache.has(auth0.key)) return loaderCache.get(auth0.key);
-        const { spec, runtime } = await owned(getAuth);
-        const hooks = createHooks({ runtimeURL: runtime.url, models: runtime.models }, transport, managedProofKey);
-        const built = {
-          baseURL: runtime.url,
-          apiKey: "local-runtime-managed",
-          async fetch(input, init) {
-            // The signed request uses the internally derived connection key
-            // (HMAC secret only); it is never read back from disk here and
-            // never handed to the host GUI or stored in plugin-auth.json.
-            const authShim = async () => ({ type: "api", key: runtimeKey(spec) });
-            const signed = await hooks.auth.loader(authShim);
-            return signed.fetch(input, init);
-          },
+        const auth = await getAuth();
+        const spec = requireAccount(auth);
+        const accountKey = auth.key;
+        const runtime = await runtimeForAccount(accountKey, spec);
+        if (loaderCache.has(accountKey)) return loaderCache.get(accountKey);
+
+        // Each loader accepts the host's original endpoint URL and routes new
+        // requests to the Runtime currently attached to this account.
+        const send = async (_input, init) => {
+          const current = await runtimeForAccount(accountKey, spec);
+          if (init.signal.aborted) throw init.signal.reason;
+          if (current.disconnectError) throw current.disconnectError;
+          try {
+            return await (transport ?? globalThis.fetch)(new URL("messages", current.url).href, init);
+          } catch (error) {
+            if (init.signal.aborted) throw error;
+            throw current.disconnectError ?? new Error("Claude TUI Runtime connection failed", { cause: error });
+          }
         };
-        if (auth0?.key) loaderCache.set(auth0.key, built);
+        const hooks = createHooks({ runtimeURL: runtime.url, models: runtime.models }, send, managedProofKey);
+        const authShim = async () => ({ type: "api", key: runtimeKey(spec) });
+        const built = await hooks.auth.loader(authShim);
+        if (runtime.disconnectError) throw runtime.disconnectError;
+        loaderCache.set(accountKey, built);
+        runtime.disconnected.then(() => {
+          if (loaderCache.get(accountKey) === built) loaderCache.delete(accountKey);
+        });
         return built;
       },
     },

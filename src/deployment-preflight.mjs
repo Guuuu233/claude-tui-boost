@@ -56,7 +56,8 @@ export function inspectDeployment({ pluginsPath, runtimeDir, serviceUid = proces
           errors.push('plugin entry is malformed');
           continue;
         }
-        if (!row.spec.includes('magpie-claude-tui')) continue;
+        const currentPlugin = /^github:(?:liangxyz|guuuu233)\/claude-tui-boost(?:#|$)/i.test(row.spec);
+        if (!currentPlugin && !row.spec.includes('magpie-claude-tui')) continue;
         const selected = row.off !== true;
         const endpoint = row.options?.runtimeURL;
         const expected = port === null ? null : `http://127.0.0.1:${port}/v1/`;

@@ -4,7 +4,8 @@
 //
 //   node scripts/managed-runtime-supervisor.mjs \
 //     --runtime <entry> [--runtime-arg <arg>]... \
-//     --state-dir <dir> --ready-file <path> [--managed-key <64-hex>]
+//     --state-dir <dir> --ready-file <path>
+// The first stdin line carries the account's 64-character connection key.
 //
 // Contract:
 //   * Spawns `<runtime> --serve --port-file <state>/port --key-file <state>/key
@@ -12,27 +13,24 @@
 //     as an explicit argv — never a shell string — with a scrubbed
 //     environment (no ANTHROPIC_* or credential overrides; explicit proxy settings are preserved).
 //   * <state-dir> ownership is proven by a .managed-owner marker bound to the
-//     managed key (or to the runtime+path when none). A previously owned dir
-//     resumes — persistent key and checkpoints are kept; a foreign or
-//     conflicting dir is refused — never cleared, claimed or deleted.
-//   * --managed-key makes <state>/key persistent: the runtime is launched
-//     with --reuse-key against this exact 0600 file, and an existing
-//     mismatching key is refused as conflicting owned state.
+//     managed key. A previously owned dir resumes with its persistent key and
+//     checkpoints; a foreign or conflicting dir is refused.
+//   * Starts the Runtime with --reuse-key against its private 0600 key file.
+//     An existing mismatching key is refused as conflicting owned state.
 //   * Once the handshake files (key, models.json, port) exist, writes
 //     --ready-file and holds the child.
 //   * An attach client's stdin EOF or SIGTERM releases only its connection.
 //     The shared owner ends the Runtime after its last client disconnects.
 //     Standalone supervision keeps the original stdin/SIGTERM lifetime.
-//   * Runtime exits before ready or after ready → the supervisor exits
-//     accordingly; it never restarts, double-spawns or orphans.
-//   * Prints nothing the runtime writes; the key file is never read, never
-//     logged, never copied out of the state dir.
+//   * Runtime stdin stays open for the supervisor's lifetime. The Runtime
+//     begins its normal shutdown on EOF if the supervisor exits.
+//   * Runtime diagnostics stay on its own stderr; IPC reports lifecycle reasons.
 import { spawn } from "node:child_process";
 import { runtimeEnvironment } from "../src/runtime-environment.mjs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createConnection, createServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, uptime } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -71,29 +69,66 @@ function isStaleSupervisorClaim(raw, bootId = readLinuxBootId()) {
   return isProcessDead(pid);
 }
 
-function stageDrvFsExecutable(p) {
-  if (!p || !p.startsWith("/mnt/")) return p;
-  try {
-    const baseName = basename(p);
-    if (baseName === "magpie-tui-bridge") {
-      const pkgDir = dirname(dirname(p));
-      const cliPath = join(pkgDir, "vendor", "claude-bridge-magpie", "src", "cli.ts").replaceAll("'", "'\\''");
-      const binDir = join(process.env.HOME || homedir(), ".cache", "magpie-claude-tui", "bin");
-      mkdirSync(binDir, { recursive: true, mode: 0o700 });
-      const dst = join(binDir, `${sha256(p).slice(0, 12)}-magpie-tui-bridge`);
-      writeFileSync(dst, `#!/bin/sh\nexec bun '${cliPath}' "$@"\n`, { mode: 0o700 });
-      chmodSync(dst, 0o700);
-      return dst;
+function readManagedKey(input) {
+  return new Promise((resolveKey, reject) => {
+    const frame = Buffer.alloc(65);
+    let size = 0;
+    const finish = (error, key) => {
+      input.pause();
+      input.off("data", onData);
+      input.off("end", onEnd);
+      input.off("close", onEnd);
+      input.off("error", onEnd);
+      if (error) reject(error);
+      else resolveKey(key);
+    };
+    const onEnd = () => finish(new Error("expected a 64-character lowercase hex key on stdin"));
+    const onData = chunk => {
+      if (size + chunk.length > frame.length) return onEnd();
+      chunk.copy(frame, size);
+      size += chunk.length;
+      const end = chunk.indexOf(10);
+      if (end < 0 && size < frame.length) return;
+      const key = frame.subarray(0, 64).toString("latin1");
+      if (size !== frame.length || end !== chunk.length - 1 || !/^[a-f0-9]{64}$/.test(key)) return onEnd();
+      finish(null, key);
+    };
+    input.once("end", onEnd);
+    input.once("close", onEnd);
+    input.once("error", onEnd);
+    input.on("data", onData);
+    input.resume();
+  });
+}
+
+function stageDrvFsExecutable(path) {
+  if (!path || !path.startsWith("/mnt/")) return path;
+  const name = basename(path);
+  const binDir = join(nativeCacheRoot(), "bin");
+  mkdirSync(binDir, { recursive: true, mode: 0o700 });
+  const destination = join(binDir, `${sha256(path).slice(0, 12)}-${name}`);
+  if (name === "magpie-tui-bridge") {
+    const pkgDir = dirname(dirname(path));
+    const cliPath = join(pkgDir, "vendor", "claude-bridge-magpie", "src", "cli.ts").replaceAll("'", "'\\''");
+    writePrivateAtomic(destination, `#!/bin/sh\nexec bun '${cliPath}' "$@"\n`, renameSync, 0o700);
+  } else {
+    const staging = mkdtempSync(join(binDir, "stage-"));
+    const executable = join(staging, name);
+    try {
+      copyFileSync(path, executable);
+      chmodSync(executable, 0o700);
+      renameSync(executable, destination);
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
     }
-    const binDir = join(process.env.HOME || homedir(), ".cache", "magpie-claude-tui", "bin");
-    mkdirSync(binDir, { recursive: true, mode: 0o700 });
-    const dst = join(binDir, `${sha256(p).slice(0, 12)}-${baseName}`);
-    copyFileSync(p, dst);
-    chmodSync(dst, 0o700);
-    return dst;
-  } catch {
-    return p;
   }
+  return destination;
+}
+
+function nativeCacheRoot() {
+  const home = realpathSync(homedir());
+  if (home.startsWith("/mnt/")) throw new Error("WSL Runtime requires a home directory on the Linux filesystem");
+  return join(home, ".cache", "magpie-claude-tui");
 }
 
 const argv = process.argv.slice(2);
@@ -109,13 +144,16 @@ const opt = name => {
 const runtime = opt("--runtime");
 const stateDir = opt("--state-dir");
 const readyFile = opt("--ready-file");
-const managedKey = opt("--managed-key");
 const runtimeArgs = argv.flatMap((v, i) => (v === "--runtime-arg" ? [argv[i + 1]] : []));
 
 const die = message => {
   console.error(`managed-supervisor: ${message}`);
   process.exit(2);
 };
+
+let managedKey;
+try { managedKey = await readManagedKey(process.stdin); }
+catch (error) { die(error.message); }
 
 function checkNoSymlinkComponents(path, finalKind = "any") {
   const target = resolve(path);
@@ -142,16 +180,17 @@ const assertNoSymlinkComponents = (path, finalKind = "any") => {
   catch (error) { die(error.message); }
 };
 
-function writePrivateAtomic(path, content) {
+function writePrivateAtomic(path, content, publish = renameSync, mode = 0o600) {
   checkNoSymlinkComponents(path, "file");
   const temp = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
   checkNoSymlinkComponents(temp, "file");
+  const handle = openSync(temp, "wx", mode);
   try {
-    writeFileSync(temp, content, { flag: "wx", mode: 0o600 });
-    renameSync(temp, path);
-  } catch (error) {
+    try { writeFileSync(handle, content); }
+    finally { closeSync(handle); }
+    publish(temp, path);
+  } finally {
     try { rmSync(temp, { force: true }); } catch {}
-    throw error;
   }
 }
 
@@ -325,6 +364,7 @@ async function runAttachClient() {
   process.stdin.resume();
   process.stdin.once("end", leave);
   process.stdin.once("close", leave);
+  process.stdin.once("error", leave);
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
   process.once("exit", () => {
@@ -349,10 +389,12 @@ async function runAttachClient() {
       if (!launched) {
         launched = true;
         const owner = spawn(process.execPath, [fileURLToPath(import.meta.url), "--shared-owner", ...argv.slice(1)], {
-          env: process.env, detached: true, stdio: ["ignore", "ignore", "ignore"],
+          env: process.env, detached: true, stdio: ["pipe", "ignore", "ignore"],
         });
         owner.once("error", () => { launchFailed = true; });
         owner.once("exit", code => { ownerExit = code ?? 1; });
+        owner.stdin.on("error", () => { launchFailed = true; });
+        owner.stdin.end(`${managedKey}\n`);
         owner.unref();
       } else if (launchFailed || (ownerExit !== null && ownerExit !== 0)) {
         throw new Error(`canonical Runtime owner could not establish its private attachment endpoint (code ${ownerExit ?? "spawn"})`);
@@ -567,9 +609,9 @@ async function openSharedOwnerControl(onEmpty, onFailure) {
 if (!runtime || !isAbsolute(runtime)) die("--runtime must be an absolute entry path");
 if (!stateDir || !isAbsolute(stateDir)) die("--state-dir must be absolute");
 if (!readyFile || !isAbsolute(readyFile)) die("--ready-file must be absolute");
-if (sharedOwnerMode && !managedKey) die("--shared-owner requires the account's managed proof");
-if (runtimeArgs.some(a => a === "--serve" || a === "--port-file" || a === "--key-file" || a === "--models-file" || a === "--state-dir")) {
-  die("runtime args must not override the owned handshake flags");
+const ownedFlags = new Set(["--serve", "--port-file", "--key-file", "--models-file", "--state-dir", "--reuse-key", "--exit-on-stdin-eof"]);
+if (runtimeArgs.some(arg => ownedFlags.has(arg?.split("=", 1)[0]))) {
+  die("runtime args must preserve the owned handshake and lifetime flags");
 }
 assertNoSymlinkComponents(dirname(resolve(readyFile)), "directory");
 assertNoSymlinkComponents(readyFile, "file");
@@ -589,7 +631,6 @@ const inside = (p, base) => {
 if (!inside(stateDir, dirname(resolve(readyFile)))) die("state-dir escapes the supervisor root; refusing");
 const liveFile = join(stateDir, ".managed-live");
 if (attachMode) {
-  if (!managedKey) die("--attach requires the account's managed proof");
   try { await runAttachClient(); }
   catch (error) { die(error.message); }
   process.exit(0);
@@ -599,7 +640,7 @@ let releaseStartup;
 try { releaseStartup = await acquireStartupTurn(); }
 catch (error) { die(error.message); }
 
-const ownerHash = sha256("managed-owner/v1\0" + (managedKey ?? (runtime + "\0" + resolve(stateDir))));
+const ownerHash = sha256("managed-owner/v1\0" + managedKey);
 const marker = join(stateDir, ".managed-owner");
 for (const file of [marker, liveFile, join(stateDir, "key"), join(stateDir, "port"), join(stateDir, "models.json")]) {
   assertNoSymlinkComponents(file, "file");
@@ -630,60 +671,49 @@ try {
 }
 try { chmodSync(stateDir, 0o700); }
 catch (error) { die(`owned state-dir permissions could not be secured: ${error.message}`); }
-// Exclusive live claim across host processes: a second supervisor on the
-// same state must refuse, never double-spawn over the first's port/key or
-// remove its ready marker. The claim is atomic (O_EXCL); a claim proven to
-// belong to a dead process or previous OS boot is reclaimed, while any live
-// or ambiguous claim is refused. Released when OUR runtime child exits.
+// Startup coordination serializes stale claim reclamation. Publish the full
+// claim in one exclusive link operation so every observer sees a complete record.
 const bootId = readLinuxBootId();
 const claimId = `${process.pid} ${Date.now()}${bootId ? " " + bootId : ""}${sharedOwnerMode ? " shared-v1" : ""}`;
-try {
-  assertNoSymlinkComponents(liveFile, "file");
-  writeFileSync(liveFile, claimId + "\n", { flag: "wx", mode: 0o600 });
-} catch {
+const publishClaim = () => writePrivateAtomic(liveFile, claimId + "\n", linkSync);
+try { publishClaim(); }
+catch (error) {
+  if (error?.code !== "EEXIST") die(`state-dir claim: ${error.message}`);
   let prior = "";
   try { prior = readFileSync(liveFile, "utf8").trim(); } catch {}
-  if (prior && isStaleSupervisorClaim(prior, bootId)) {
-    try {
-      assertNoSymlinkComponents(liveFile, "file");
-      rmSync(liveFile, { force: true });
-      writeFileSync(liveFile, claimId + "\n", { flag: "wx", mode: 0o600 });
-    } catch {
-      refuseLiveClaim(prior);
-    }
-  } else {
-    refuseLiveClaim(prior);
+  if (!prior || !isStaleSupervisorClaim(prior, bootId)) refuseLiveClaim(prior);
+  try {
+    assertNoSymlinkComponents(liveFile, "file");
+    rmSync(liveFile, { force: true });
+    publishClaim();
+  } catch (retryError) {
+    if (retryError?.code === "EEXIST") refuseLiveClaim(readFileSync(liveFile, "utf8").trim());
+    die(`state-dir claim: ${retryError.message}`);
   }
 }
 const release = () => { try { if (readFileSync(liveFile, "utf8").trim() === claimId) rmSync(liveFile, { force: true }); } catch {} };
 process.once("exit", release);
 releaseStartup();
 
-const keyFile = join(stateDir, "key");
+const onDrvFs = stateDir.startsWith("/mnt/");
+const nativeAccountDir = onDrvFs ? join(nativeCacheRoot(), "drvfs", sha256(stateDir).slice(0, 16)) : null;
+const runtimeStateDir = nativeAccountDir ? join(nativeAccountDir, "state") : stateDir;
+const keyFile = join(nativeAccountDir ?? stateDir, "key");
 const portFile = join(stateDir, "port");
 const modelsFile = join(stateDir, "models.json");
 for (const file of [keyFile, portFile, modelsFile, readyFile]) assertNoSymlinkComponents(file, "file");
 
-// Managed key: the plugin derives the connection key from the account's
-// managed secret so <state>/key is persistent across supervised restarts.
-// With --reuse-key the runtime validates this file (0600, 64 hex); an
-// existing mismatching key means conflicting owned state — refuse.
-if (managedKey) {
-  if (!/^[a-f0-9]{64}$/.test(managedKey)) die("--managed-key must be 64 lowercase hex chars");
-  assertNoSymlinkComponents(keyFile, "file");
+// Keep the Runtime key and private state in the native filesystem on WSL.
+try {
+  if (nativeAccountDir) mkdirSync(runtimeStateDir, { recursive: true, mode: 0o700 });
   try {
     const prior = readFileSync(keyFile, "utf8");
     if (prior.trim() !== managedKey) die(`key file ${keyFile} holds different bytes; refusing conflicting owned state`);
   } catch (error) {
-    if (error?.code !== "ENOENT") die(`key file: ${error.message}`);
+    if (error?.code !== "ENOENT") throw error;
   }
-  // Idempotent write: the key is derived state, so on resume rewrite it
-  // (checkpoint files under the dir are untouched).
-  try { writePrivateAtomic(keyFile, managedKey); }
-  catch (error) { die(`key file could not be written safely: ${error.message}`); }
-} else {
-  try { lstatSync(keyFile); die(`key file ${keyFile} already exists without --managed-key; refusing`); } catch (e) { if (e?.code !== "ENOENT") die(`state file: ${e.message}`); }
-}
+  writePrivateAtomic(keyFile, managedKey);
+} catch (error) { die(`key file could not be written safely: ${error.message}`); }
 
 // Stale handshake descriptors from a dead previous run are ours to remove
 // (the runtime rewrites them atomically); checkpoints are never touched.
@@ -707,36 +737,31 @@ for (let i = 0; i < effectiveRuntimeArgs.length - 1; i++) {
   }
 }
 
-let runtimeKeyFile = keyFile;
-let runtimeStateDir = stateDir;
-if (stateDir.startsWith("/mnt/")) {
-  const extRoot = join(process.env.HOME || homedir(), ".cache", "magpie-claude-tui", "drvfs", sha256(stateDir).slice(0, 16));
-  runtimeStateDir = join(extRoot, "state");
-  mkdirSync(runtimeStateDir, { recursive: true, mode: 0o700 });
-  if (managedKey) {
-    runtimeKeyFile = join(extRoot, "key");
-    writePrivateAtomic(runtimeKeyFile, managedKey);
-  }
-}
-
 const child = spawn(stageDrvFsExecutable(runtime), [
   "--serve",
   "--port-file", portFile,
-  "--key-file", runtimeKeyFile,
+  "--key-file", keyFile,
   "--models-file", modelsFile,
   "--state-dir", runtimeStateDir,
+  "--reuse-key",
+  "--exit-on-stdin-eof",
   ...effectiveRuntimeArgs,
 ], {
   env,
-  stdio: ["ignore", "inherit", "inherit"],
+  stdio: ["pipe", "inherit", "inherit"],
 });
+child.stdin.on("error", () => {});
 
 let stopping = false;
 let sharedControl = null;
 let childExit = null;
+child.once("error", error => {
+  if (!child.pid) childExit = { code: 1, signal: null };
+  console.error(`managed-supervisor: runtime process error: ${error.message}`);
+});
 child.once("exit", (code, signal) => { childExit = { code, signal }; });
 
-const GRACE_MS = 7000;
+const GRACE_MS = 15000;
 const killTimer = () => setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, GRACE_MS);
 
 function shutdown(exitCode, reason) {
@@ -771,6 +796,7 @@ if (sharedOwnerMode) {
   process.stdin.resume();
   process.stdin.once("end", () => shutdown(0));
   process.stdin.once("close", () => shutdown(0));
+  process.stdin.once("error", () => shutdown(0));
 } else {
   shutdown(0);
 }
@@ -785,10 +811,11 @@ const poll = setInterval(() => {
   if (childExit) {
     clearInterval(poll);
     stopping = true;
-    console.error(`managed-supervisor: runtime exited before ready (code ${childExit.code})`);
+    const status = childExit.signal ?? `code ${childExit.code}`;
+    console.error(`managed-supervisor: runtime exited before ready (${status})`);
     try { rmSync(readyFile, { force: true }); } catch {}
     sharedControl?.close();
-    const notification = sharedControl?.report(`Runtime exited before ready (code ${childExit.code})`) ?? Promise.resolve();
+    const notification = sharedControl?.report(`Runtime exited before ready (${status})`) ?? Promise.resolve();
     notification.then(() => { release(); process.exit(1); });
     return;
   }
@@ -825,12 +852,13 @@ const poll = setInterval(() => {
         shutdown(1, "Runtime readiness could not be published safely");
         return;
       }
-      child.once("exit", code => {
+      child.once("exit", (code, signal) => {
         if (stopping) return; // shutdown owns its requested exit code and cleanup
         stopping = true;
         sharedControl?.close();
-        const notification = sharedControl?.report(`Runtime process exited (code ${code ?? "signal"})`) ?? Promise.resolve();
-        notification.then(() => { release(); process.exit(code ?? 0); });
+        const status = signal ?? `code ${code}`;
+        const notification = sharedControl?.report(`Runtime process exited (${status})`) ?? Promise.resolve();
+        notification.then(() => { release(); process.exit(code ?? 1); });
       });
       return;
     }
