@@ -1550,17 +1550,7 @@ func (b *subscriptionBridge) startInteractiveWithPromptImages(ctx context.Contex
 	run.reading.Add(2)
 	run.timer = time.AfterFunc(interactiveActiveLongest, run.abort)
 	segment := run.attach()
-	b.mu.Lock()
-	b.runs[token] = run
-	if outerSession != "" {
-		// The run owns the canonical outer conversation from publication —
-		// while the starting request still holds its outerTurns claim — until
-		// its child is reaped and removeRun frees it (liveOuter). A helper
-		// run has outerSession == "" and registers nothing.
-		b.liveOuter[interactiveSessionStateKey(owner, outerSession)] = run
-	}
-	b.mu.Unlock()
-	err = run.launch()
+	err = b.launchRun(run)
 	_, _ = stdoutW.Close(), stderrW.Close() // the wrapper owns its inherited ends
 	if err != nil {
 		_, _ = stdout.Close(), stderr.Close()

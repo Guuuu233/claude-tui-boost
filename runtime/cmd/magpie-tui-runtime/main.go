@@ -37,6 +37,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -82,6 +83,7 @@ func run(argv []string) error {
 		reuseKey     = fs.Bool("reuse-key", false, "reuse an existing --key-file (validated 0600 regular file, 64 hex bytes) instead of always generating fresh")
 		claudeCfgDir = fs.String("claude-config-dir", "", "CLAUDE_CONFIG_DIR override for the native sign-in")
 		modelsFlag   = fs.String("models", "", "comma-separated model ids to advertise (default: claude-tui)")
+		exitOnEOF    = fs.Bool("exit-on-stdin-eof", false, "shut down when the owner closes stdin")
 	)
 	if err := fs.Parse(argv); err != nil {
 		return err
@@ -95,10 +97,32 @@ func run(argv []string) error {
 		}
 	}
 
-	// Connection key: fresh random per start (contract/v1), or a validated
-	// existing key-file when --reuse-key was passed for supervised
-	// restarts. The plugin hands the value to its auth loader; the runtime
-	// never logs it.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if *exitOnEOF {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			cancel()
+		}()
+	}
+
+	state, err := resolveStateDir(*stateDir)
+	if err != nil {
+		return err
+	}
+	lock, err := lockRuntimeState(ctx, state)
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
+	// The state owner prepares the connection key before publishing readiness.
 	keyHex, err := loadOrGenerateKey(*keyFile, *reuseKey)
 	if err != nil {
 		return err
@@ -126,7 +150,7 @@ func run(argv []string) error {
 	}
 
 	bridge.Init(&bridge.Config{
-		StateDir:        *stateDir,
+		StateDir:        state,
 		ClaudeConfigDir: *claudeCfgDir,
 		BridgePath:      *bridgePath,
 		HelperArgv:      helperArgv,
@@ -145,7 +169,7 @@ func run(argv []string) error {
 
 	rt := bridge.NewRuntime([]byte(keyHex))
 	srv := &http.Server{
-		Handler:           rt,
+		Handler:           rt.AdmissionHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// tool calls block while the caller runs them; no global idle
 		// timeout, matching production's mux behavior.
@@ -167,35 +191,120 @@ func run(argv []string) error {
 	if err := writeFile600(*modelsFile, modelsJSON); err != nil {
 		return err
 	}
-	if err := writeFile600(*portFile, []byte(fmt.Sprintf("%d", port))); err != nil {
+	portText := fmt.Sprint(port)
+	if err := writeFile600(*portFile, []byte(portText)); err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go func() {
-		<-ctx.Done()
-		rt.Shutdown()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+	defer func() {
+		if published, err := os.ReadFile(*portFile); err == nil && string(published) == portText {
+			_ = os.Remove(*portFile)
+		}
 	}()
 
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case serveErr = <-served:
 	}
-	return nil
+
+	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	runs, cancelRuns := context.WithTimeout(shutdown, 6*time.Second)
+	rt.ShutdownContext(runs)
+	cancelRuns()
+	httpShutdown, cancelHTTP := context.WithTimeout(shutdown, 4*time.Second)
+	defer cancelHTTP()
+	if err := srv.Shutdown(httpShutdown); err != nil {
+		_ = srv.Close()
+		fmt.Fprintln(os.Stderr, "magpie-tui-runtime: HTTP shutdown:", err)
+	}
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		return nil
+	}
+	return serveErr
+}
+
+func resolveStateDir(path string) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	if configHome := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(configHome) {
+		return filepath.Join(configHome, "magpie-tui-runtime"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "magpie-tui-runtime"), nil
+}
+
+func lockRuntimeState(ctx context.Context, state string) (*os.File, error) {
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		return nil, fmt.Errorf("create Runtime state directory %q: %w", state, err)
+	}
+	path := filepath.Join(state, ".runtime.lock")
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open Runtime state lock %q: %w", path, err)
+	}
+	locked := false
+	defer func() {
+		if !locked {
+			_ = file.Close()
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect Runtime state lock %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return nil, fmt.Errorf("Runtime state lock %q requires a regular 0600 file", path)
+	}
+	wait, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for wait.Err() == nil {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		switch err {
+		case nil:
+			locked = true
+			return file, nil
+		case syscall.EINTR:
+			continue
+		case syscall.EWOULDBLOCK:
+			select {
+			case <-wait.Done():
+			case <-tick.C:
+			}
+		default:
+			return nil, fmt.Errorf("lock Runtime state directory %q: %w", state, err)
+		}
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return nil, fmt.Errorf("Runtime state directory %q is held by another Runtime", state)
 }
 
 func writeFile600(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	defer os.Remove(tmp.Name())
+	_, writeErr := tmp.Write(data)
+	closeErr := tmp.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // loadOrGenerateKey resolves the hex connection key the runtime serves

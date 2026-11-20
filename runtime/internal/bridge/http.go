@@ -17,6 +17,18 @@ import (
 	"time"
 )
 
+// AdmissionHandler keeps MCP callbacks available while active runs drain.
+func (rt *runtimeTUI) AdmissionHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/messages" && rt.bridge.closing.Load() {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, protoAnthropic, http.StatusServiceUnavailable, "Runtime is shutting down")
+			return
+		}
+		rt.ServeHTTP(w, r)
+	})
+}
+
 // SessionHeader names the session a call is part of, for the usage log to
 // tell several sessions on one model apart; without it, the session an
 // agent names itself in sessionHeaders is taken.
@@ -244,17 +256,19 @@ func (e *usageEncoder) finish() {
 	e.streamEncoder.finish()
 }
 
+// sseWriteTimeout bounds the time a slow client can hold an event write.
+const sseWriteTimeout = 5 * time.Second
+
 // sseWriter writes events to a client and flushes each one.
 type sseWriter struct {
-	w     http.ResponseWriter
-	f     http.Flusher
-	begun bool
-	wrote time.Time // when the client was last written to
+	w          http.ResponseWriter
+	controller *http.ResponseController
+	begun      bool
+	wrote      time.Time // when the client was last written to
 }
 
 func newSSEWriter(w http.ResponseWriter) *sseWriter {
-	f, _ := w.(http.Flusher)
-	return &sseWriter{w: w, f: f}
+	return &sseWriter{w: w, controller: http.NewResponseController(w)}
 }
 
 func (s *sseWriter) begin() {
@@ -267,15 +281,15 @@ func (s *sseWriter) begin() {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
+	_ = s.controller.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	s.w.WriteHeader(http.StatusOK)
 	s.flush()
-	s.wrote = time.Now()
 }
 
 func (s *sseWriter) flush() {
-	if s.f != nil {
-		s.f.Flush()
-	}
+	_ = s.controller.Flush()
+	_ = s.controller.SetWriteDeadline(time.Time{})
+	s.wrote = time.Now()
 }
 
 // quiet is how long the client has had nothing from s; a stream not yet
@@ -311,15 +325,15 @@ func (s *sseWriter) event(name string, v any) {
 		b.Write(j)
 	}
 	b.WriteString("\n\n")
+	_ = s.controller.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	s.w.Write(b.Bytes())
 	s.flush()
-	s.wrote = time.Now()
 }
 
 // comment writes an SSE comment; see sse.go in the deployed source.
 func (s *sseWriter) comment(text string) {
 	s.begin()
+	_ = s.controller.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	io.WriteString(s.w, ": "+text+"\n")
 	s.flush()
-	s.wrote = time.Now()
 }

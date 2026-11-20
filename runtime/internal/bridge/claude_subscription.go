@@ -84,6 +84,7 @@ func nativeErrorResultText(result string, status int, raw json.RawMessage) strin
 
 type subscriptionBridge struct {
 	mu          sync.Mutex
+	closing     atomic.Bool
 	stateMu     sync.Mutex                  // serializes the optional interactive checkpoint file
 	toolJournal *interactiveToolJournal     // opt-in durable evidence; never authorizes automatic tool replay
 	runs        map[string]*subscriptionRun // callback token → run
@@ -216,12 +217,9 @@ type subscriptionRun struct {
 	// historyArchive holds this native run's private paginated import.
 	historyArchive *claudeHistoryArchive
 
-	mu sync.Mutex
-	// sending is held across a send to the segment and taken before it is
-	// closed, so a send blocked on a full segment no one reads yet holds
-	// this, not mu: the request's heard, stderr and abort go on meanwhile
-	sending           sync.Mutex
+	mu                sync.Mutex
 	segment           chan Event
+	segmentDelivery   *eventSegment
 	pending           map[string]chan mcpToolResult
 	queuedCallbacks   []queuedMCPCall // MCP requests received before transcript reader starts
 	seenMCPCallIDs    map[string]bool // reject duplicate callback IDs even after first result
@@ -739,17 +737,13 @@ func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, con
 	// parked Claude process and MCP request alive forever.
 	run.timer = time.AfterFunc(30*time.Minute, run.abort)
 	segment := run.attach()
-	b.mu.Lock()
-	b.runs[token] = run
-	b.mu.Unlock()
-
 	run.outputs = []*os.File{stdout, stderr}
 	run.reading.Add(2)
-	err = run.launch()
+	err = b.launchRun(run)
 	_, _ = stdoutW.Close(), stderrW.Close() // Claude Code has its own
 	if err != nil {
-		_, _ = stdout.Close(), stderr.Close()
-		b.removeRun(run)
+		_, _, _ = stdout.Close(), stderr.Close(), stdin.Close()
+		run.finish()
 		return nil, nil, err
 	}
 	go func() {
@@ -925,10 +919,11 @@ func (b *subscriptionBridge) resume(req *Request, owner string) (*subscriptionRu
 		run.mu.Unlock()
 		return nil, nil
 	}
-	ch := make(chan Event, 64)
-	run.segment = ch
+	previous := run.detachSegmentLocked()
+	ch := run.attachSegmentLocked()
 	run.turnUUID, run.backKey = turn, key
 	run.mu.Unlock()
+	previous.close()
 	run.timer.Reset(30 * time.Minute)
 	// a turn the router picked another effort for (#502) goes on in the
 	// same Claude Code, told the level first: it asks the next turn at it
@@ -1594,13 +1589,12 @@ func (r *subscriptionRun) letGoFor(segment <-chan Event) {
 		return
 	}
 	waitingForClientTool := r.interactive && !r.closed && (len(r.shown) > 0 || len(r.pending) > 0)
+	detached := r.detachSegmentLocked()
 	if waitingForClientTool {
-		if r.segment == nil {
+		if detached == nil {
 			r.mu.Unlock()
 			return // this exact stream was already detached
 		}
-		ch := r.segment
-		r.segment = nil
 		r.parkedAt = time.Now()
 		r.abandonedByClient = true
 		final := len(r.asked) > 0
@@ -1615,9 +1609,12 @@ func (r *subscriptionRun) letGoFor(segment <-chan Event) {
 			}
 		}
 		r.mu.Unlock()
-		r.closeSegment(ch)
+		detached.close()
 		log.Printf("Claude interactive client disconnected during MCP tool handoff; keeping run for tool results")
 		return
+	}
+	if detached != nil {
+		r.resuming = false
 	}
 	turn, back := r.turnUUID, r.backKey
 	can := !r.closed && r.stdin != nil && r.bridge != nil && r.timer != nil &&
@@ -1629,6 +1626,7 @@ func (r *subscriptionRun) letGoFor(segment <-chan Event) {
 		r.rewound = true
 	}
 	r.mu.Unlock()
+	detached.close()
 	if !can {
 		r.abort()
 		return
@@ -1639,10 +1637,7 @@ func (r *subscriptionRun) letGoFor(segment <-chan Event) {
 		r.mu.Unlock()
 		close(done)
 	}()
-	// the reply goes to no one from here: what Claude Code says as it
-	// stops (an interrupted result) is read past
-	r.endSegment()
-	// found at once by a resend, which waits for the rewind (resume)
+	// A resend finds the parked run and waits for its rewind.
 	r.bridge.keepIdle(r, back, "")
 	if err := r.rewind(turn); err != nil {
 		log.Printf("claude: a turn the client gave up on could not be taken back, its run let go: %v", err)
@@ -2095,50 +2090,102 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+type eventSegment struct {
+	sending sync.Mutex
+	events  chan Event
+	cancel  chan struct{}
+}
+
 func (r *subscriptionRun) attach() chan Event {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	ch := make(chan Event, 64)
-	r.segment = ch
+	previous := r.detachSegmentLocked()
+	ch := r.attachSegmentLocked()
+	r.mu.Unlock()
+	previous.close()
 	return ch
 }
 
-func (r *subscriptionRun) emit(ev Event) {
-	r.sending.Lock()
-	defer r.sending.Unlock()
-	r.mu.Lock()
-	ch := r.segment
-	if ev.Kind == KStart {
-		// No client may reattach to an old tool result after the model has
-		// started replying while the disconnected stream was absent.
-		r.shown = nil
+func (r *subscriptionRun) attachSegmentLocked() chan Event {
+	ch := make(chan Event, 64)
+	if r.closed {
+		close(ch)
+		return ch
 	}
-	if ch != nil {
-		switch ev.Kind {
-		case KToolStart:
-			if r.interactive && os.Getenv("MAGPIE_CLAUDE_TUI_DEBUG_API") == "1" {
-				sum := sha256.Sum256([]byte(ev.ID))
-				log.Printf("Claude interactive MCP outbound tool=%q id_sha=%x", ev.Name, sum[:6])
-			}
-			r.shown = append(r.shown, shownCall{id: ev.ID, name: ev.Name})
-		case KToolArgs:
-			if n := len(r.shown); n > 0 {
-				r.shown[n-1].args += ev.Text
-			}
-		}
+	r.segment = ch
+	r.segmentDelivery = &eventSegment{events: ch, cancel: make(chan struct{})}
+	return ch
+}
+
+func (r *subscriptionRun) detachSegmentLocked() *eventSegment {
+	segment := r.segmentDelivery
+	if segment != nil {
+		r.segment, r.segmentDelivery = nil, nil
+		close(segment.cancel)
 	}
-	r.mu.Unlock()
-	if ch != nil {
-		ch <- ev
+	return segment
+}
+
+func (s *eventSegment) close() {
+	if s != nil {
+		s.sending.Lock()
+		close(s.events)
+		s.sending.Unlock()
 	}
 }
 
-// closeSegment closes a segment taken off the run, once no send to it is
-// under way.
-func (r *subscriptionRun) closeSegment(ch chan Event) {
-	r.sending.Lock()
-	close(ch)
-	r.sending.Unlock()
+func (r *subscriptionRun) emit(ev Event) {
+	r.mu.Lock()
+	segment := r.segmentDelivery
+	if segment == nil && ev.Kind == KStart {
+		r.shown = nil
+	}
+	r.mu.Unlock()
+	if segment == nil {
+		return
+	}
+
+	segment.sending.Lock()
+	defer segment.sending.Unlock()
+	r.mu.Lock()
+	if r.segmentDelivery != segment {
+		r.mu.Unlock()
+		return
+	}
+	select {
+	case segment.events <- ev:
+		r.noteEmittedEventLocked(ev)
+		r.mu.Unlock()
+		return
+	default:
+		r.mu.Unlock()
+	}
+	select {
+	case <-segment.cancel:
+	case segment.events <- ev:
+		r.mu.Lock()
+		if r.segmentDelivery == segment {
+			r.noteEmittedEventLocked(ev)
+		}
+		r.mu.Unlock()
+	}
+}
+
+func (r *subscriptionRun) noteEmittedEventLocked(ev Event) {
+	switch ev.Kind {
+	case KStart:
+		// A new model reply supersedes the previous tool handoff.
+		r.shown = nil
+	case KToolStart:
+		if r.interactive && os.Getenv("MAGPIE_CLAUDE_TUI_DEBUG_API") == "1" {
+			sum := sha256.Sum256([]byte(ev.ID))
+			log.Printf("Claude interactive MCP outbound tool=%q id_sha=%x", ev.Name, sum[:6])
+		}
+		r.shown = append(r.shown, shownCall{id: ev.ID, name: ev.Name})
+	case KToolArgs:
+		if n := len(r.shown); n > 0 {
+			r.shown[n-1].args += ev.Text
+		}
+	}
 }
 
 func (r *subscriptionRun) keepInteractiveAlive(done <-chan struct{}, every time.Duration) {
@@ -2156,15 +2203,12 @@ func (r *subscriptionRun) keepInteractiveAlive(done <-chan struct{}, every time.
 
 func (r *subscriptionRun) endSegment() {
 	r.mu.Lock()
-	ch := r.segment
-	r.segment = nil
-	if ch != nil {
+	segment := r.detachSegmentLocked()
+	if segment != nil {
 		r.resuming = false
 	}
 	r.mu.Unlock()
-	if ch != nil {
-		r.closeSegment(ch)
-	}
+	segment.close()
 }
 
 func (r *subscriptionRun) readOutput(rd io.Reader) {
@@ -3122,6 +3166,13 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown or expired Claude run", http.StatusNotFound)
 		return
 	}
+	run.mu.Lock()
+	closed := run.closed
+	run.mu.Unlock()
+	if closed {
+		http.Error(w, "the agent's run ended", http.StatusGone)
+		return
+	}
 	body, status, err := readBoundedRequestBody(w, r, requestLimits{body: 16 << 20}, nil)
 	if err != nil {
 		http.Error(w, err.Error(), status)
@@ -3137,8 +3188,12 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run.mu.Lock()
-	readOnly := run.interactive && run.readOnlyRecovery
+	closed, readOnly := run.closed, run.interactive && run.readOnlyRecovery
 	run.mu.Unlock()
+	if closed {
+		http.Error(w, "the agent's run ended", http.StatusGone)
+		return
+	}
 	if readOnly {
 		// A tool-free recovery turn registered no tools and offers none:
 		// any callback — real, raced, or model-forged — is refused before
@@ -3240,6 +3295,11 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 	}
 	waiter := make(chan mcpToolResult, 1)
 	run.mu.Lock()
+	if run.closed {
+		run.mu.Unlock()
+		http.Error(w, "the agent's run ended", http.StatusGone)
+		return
+	}
 	if run.seenMCPCallIDs[call.ToolCallID] {
 		run.mu.Unlock()
 		http.Error(w, "duplicate native MCP callback ID; refusing tool replay", http.StatusConflict)
@@ -3298,9 +3358,19 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Claude interactive MCP callback registered: tool=%q id_sha=%x", call.Name, sum[:6])
 	}
 	b.mu.Lock()
-	b.calls[call.ToolCallID] = run
+	run.mu.Lock()
+	closed = run.closed
+	registered := !closed && run.pending[call.ToolCallID] == waiter
+	if registered {
+		b.calls[call.ToolCallID] = run
+	}
+	run.mu.Unlock()
 	b.mu.Unlock()
-	if onCall != nil {
+	if closed {
+		http.Error(w, "the agent's run ended", http.StatusGone)
+		return
+	}
+	if registered && onCall != nil {
 		onCall(call.ToolCallID, call.Name, call.Arguments)
 	}
 	var expire <-chan time.Time
@@ -3404,8 +3474,7 @@ func (r *subscriptionRun) finish() {
 	r.pending = map[string]chan mcpToolResult{}
 	controls := r.controls
 	r.controls = nil
-	ch := r.segment
-	r.segment = nil
+	segment := r.detachSegmentLocked()
 	r.mu.Unlock()
 	for _, waiter := range pending {
 		close(waiter)
@@ -3413,12 +3482,25 @@ func (r *subscriptionRun) finish() {
 	for _, waiter := range controls {
 		close(waiter)
 	}
-	if ch != nil {
-		r.closeSegment(ch)
-	}
+	segment.close()
 	if r.bridge != nil { // a run made in a test may have none
 		r.bridge.removeRun(r)
 	}
+}
+
+// launchRun publishes and starts the child under the shutdown snapshot lock.
+func (b *subscriptionBridge) launchRun(run *subscriptionRun) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closing.Load() {
+		return errors.New("Runtime is shutting down")
+	}
+	b.runs[run.token] = run
+	if run.outerSession != "" {
+		// removeRun releases the conversation after the child is reaped.
+		b.liveOuter[interactiveSessionStateKey(run.owner, run.outerSession)] = run
+	}
+	return run.launch()
 }
 
 // launch starts the run's agent, to end with all it starts.
@@ -3471,6 +3553,10 @@ func (r *subscriptionRun) drain() {
 var interactiveAbortGrace = 5 * time.Second
 
 func (r *subscriptionRun) abort() {
+	r.abortContext(context.Background())
+}
+
+func (r *subscriptionRun) abortContext(ctx context.Context) {
 	r.mu.Lock()
 	t := r.tree
 	cmd, interactive, done := r.cmd, r.interactive, r.interactiveDone
@@ -3486,6 +3572,7 @@ func (r *subscriptionRun) abort() {
 					r.finish()
 					return
 				case <-time.After(interactiveAbortGrace):
+				case <-ctx.Done():
 				}
 			}
 		}
@@ -3494,17 +3581,36 @@ func (r *subscriptionRun) abort() {
 	r.finish()
 }
 
-// abortAll ends every run, as the gateway stops: they are no terminal's
-// to be interrupted with it.
+// ShutdownContext closes run admission and waits for parallel run cleanup.
+func (rt *runtimeTUI) ShutdownContext(ctx context.Context) {
+	rt.bridge.closing.Store(true)
+	rt.bridge.abortRuns(ctx)
+}
+
 func (b *subscriptionBridge) abortAll() {
-	b.mu.Lock()
-	runs := make([]*subscriptionRun, 0, len(b.runs))
-	for _, run := range b.runs {
-		runs = append(runs, run)
-	}
-	b.mu.Unlock()
-	for _, run := range runs {
-		run.abort()
+	b.abortRuns(context.Background())
+}
+
+func (b *subscriptionBridge) abortRuns(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.mu.Lock()
+		runs := make([]*subscriptionRun, 0, len(b.runs))
+		for _, run := range b.runs {
+			runs = append(runs, run)
+		}
+		b.mu.Unlock()
+
+		var pending sync.WaitGroup
+		for _, run := range runs {
+			pending.Go(func() { run.abortContext(ctx) })
+		}
+		pending.Wait()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
